@@ -28,6 +28,17 @@ Goals:
 
 Not goals: no cloud features, and nothing that talks to Line 6's servers.
 
+## Download
+
+Grab the latest APK from the [Releases page](https://github.com/zz9pa/Amplifree/releases/latest)
+(`Amplifree-<version>.apk`, with a `SHA256SUMS` file to check it against).
+
+1. Pair your amp in Android's Bluetooth settings and make sure it shows **Connected**.
+2. Open the downloaded APK and allow your browser or file manager to install apps when asked.
+3. Open Amplifree, allow the "Nearby devices" permission, and it connects to your amp by itself.
+
+It needs Android 7.0 or newer and asks for Bluetooth only: no internet, no microphone, no location.
+
 ## How it works
 
 Amplifree talks to your amp over Bluetooth (the standard Serial Port Profile). The wire
