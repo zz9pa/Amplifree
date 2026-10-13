@@ -3,6 +3,7 @@
 
     <!-- Connection / link state -->
     <string name="action_connect">Connect to amp</string>
+    <string name="action_connect_short">Connect</string>
     <string name="action_open_bluetooth_settings">Open Bluetooth settings</string>
     <string name="link_disconnected_title">Amp not connected</string>
     <string name="link_needs_link_title">Waiting for Bluetooth</string>
@@ -27,4 +28,27 @@
     <string name="header_connection_description">Amp connection: %1$s</string>
     <string name="header_connection_action">Manage amp connection</string>
     <string name="header_tone_description">Current tone: %1$s</string>
+
+    <!-- Tones tab -->
+    <string name="tones_search_hint">Search tones</string>
+    <string name="tones_search_clear">Clear search</string>
+    <string name="tones_refresh">Refresh</string>
+    <string name="tones_refresh_description">Refresh the tone list from the amp</string>
+    <plurals name="tones_count">
+        <item quantity="one">%1$d tone on the amp</item>
+        <item quantity="other">%1$d tones on the amp</item>
+    </plurals>
+    <string name="tones_filtered_count">%1$d of %2$d tones</string>
+    <string name="tones_scanning">Reading tones from your amp… %1$d of %2$d</string>
+    <string name="tones_waiting_title">Waiting for your amp\'s tone list…</string>
+    <string name="tones_waiting_body">The tones appear here as soon as the amp has sent them.</string>
+    <string name="tones_empty_title">No tones to show yet</string>
+    <string name="tones_empty_body">Your amp hasn\'t sent its list of stored tones. Refresh to ask for it again.</string>
+    <string name="tones_no_match_title">No matching tones</string>
+    <string name="tones_no_match_body">Nothing matches \"%1$s\".</string>
+    <string name="tones_disconnected_body">Connect your amp to browse the tones stored on it.</string>
+    <string name="tones_banner_disconnected">Not connected. Connect to load a tone.</string>
+    <string name="tones_slot">Slot %1$d</string>
+    <string name="tones_active">Active</string>
+    <string name="tones_load_action">Load this tone</string>
 </resources>

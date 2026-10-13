@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.zz9pa.amplifree.ui.AmplifreeUiState
 import io.github.zz9pa.amplifree.ui.AmplifreeViewModel
 import io.github.zz9pa.amplifree.ui.LinkStatus
+import io.github.zz9pa.amplifree.ui.friendlyStatus
 import io.github.zz9pa.amplifree.ui.components.TopHardwareHeader
 import io.github.zz9pa.amplifree.ui.dialogs.ConnectionDialog
 import io.github.zz9pa.amplifree.ui.dialogs.SaveToneDialog
@@ -91,6 +92,8 @@ class MainActivity : ComponentActivity() {
                 val needsLink by hw.needsLink.collectAsStateWithLifecycle()
                 val link = LinkStatus.of(hardwareState.connectionState, ready, needsLink)
                 val connected = link.isReady
+                val friendly = friendlyStatus(status, context.resources)
+                val openConnection = { viewModel.toggleConnectionDialog(true) }
                 val dirty by hw.dirty.collectAsStateWithLifecycle()
                 val saveStatus by hw.saveStatus.collectAsStateWithLifecycle()
                 val undoSlot by hw.undoSlot.collectAsStateWithLifecycle()
@@ -112,7 +115,7 @@ class MainActivity : ComponentActivity() {
                                 hardwareState = hardwareState,
                                 ready = ready,
                                 toneName = activeTone,
-                                onOpenConnectionDialog = { viewModel.toggleConnectionDialog(true) }
+                                onOpenConnectionDialog = openConnection
                             )
                         },
                         bottomBar = {
@@ -164,9 +167,10 @@ class MainActivity : ComponentActivity() {
                                         AmplifreeUiState.TAB_TONES -> ToneBrowserScreen(
                                             ampPresets = ampPresets,
                                             activeTone = activeTone,
-                                            isReady = connected,
+                                            link = link,
                                             scanProgress = scanProgress,
-                                            statusText = status,
+                                            status = friendly,
+                                            onConnect = openConnection,
                                             onRescan = { hw.rescanPresets() },
                                             onLoad = { i, n ->
                                                 hw.loadStoredPreset(i, n)

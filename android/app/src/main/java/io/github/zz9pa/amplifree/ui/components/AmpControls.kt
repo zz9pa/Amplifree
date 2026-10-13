@@ -168,3 +168,50 @@ fun ConnectPrompt(
         )
     }
 }
+
+/**
+ * Slim strip shown above content that is still on screen while the amp is not connected
+ * (a stale tone list, the last tone read). Says what is wrong and offers Connect.
+ */
+@Composable
+fun LinkBanner(
+    link: LinkStatus,
+    message: String,
+    onConnect: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (link.isReady) return
+    Surface(
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
+        color = AmpSurface,
+        border = BorderStroke(1.dp, AmpOrangeGlow),
+        modifier = modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (link == LinkStatus.CONNECTING) {
+                CircularProgressIndicator(
+                    color = AmpGold, trackColor = AmpSurfaceVariant, strokeWidth = 2.dp,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Text(
+                message,
+                color = AmpTextPrimary,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp)
+            )
+            if (link != LinkStatus.CONNECTING) {
+                TextButton(onClick = onConnect, modifier = Modifier.heightIn(min = MinTouchTarget)) {
+                    Text(
+                        stringResource(R.string.action_connect_short),
+                        color = AmpGold, fontWeight = FontWeight.Bold, fontSize = 13.sp
+                    )
+                }
+            }
+        }
+    }
+}
