@@ -120,4 +120,29 @@
     <string name="editor_browse_tones">BROWSE TONES</string>
     <string name="editor_reload">RELOAD FROM AMP</string>
     <string name="choice_open_action">Choose a value</string>
+
+    <!-- Dialogs -->
+    <string name="dialog_close">CLOSE</string>
+    <string name="dialog_cancel">CANCEL</string>
+    <string name="connection_title">AMP CONNECTION</string>
+    <string name="connection_needs_link">Android has the amp paired but not connected. Tap it in Bluetooth settings; when it shows Connected, come back and Amplifree finishes connecting by itself.</string>
+    <string name="connection_open_bt_settings">OPEN BLUETOOTH SETTINGS</string>
+    <string name="connection_paired_amps">PAIRED AMPS</string>
+    <string name="connection_no_amps">No paired amp found. Pair it in Android\'s Bluetooth settings first (it shows up as an audio device), then come back. After that Amplifree reconnects to it automatically.</string>
+    <string name="connection_disconnect">DISCONNECT</string>
+    <string name="connection_connect_to">Connect to %1$s</string>
+    <string name="connection_connected">Connected</string>
+    <string name="picker_title">CHOOSE %1$s</string>
+    <string name="picker_hint">Loads the model with its own default settings. Your other blocks are untouched.</string>
+    <string name="picker_search">Search</string>
+    <string name="picker_no_match">Nothing matches \"%1$s\"</string>
+    <string name="picker_current">Current</string>
+    <string name="picker_choose_action">Use this model</string>
+    <string name="save_title">SAVE TONE TO AMP</string>
+    <string name="save_name_label">Tone name</string>
+    <string name="save_slot_heading">SLOT</string>
+    <string name="save_slot_empty">(empty)</string>
+    <string name="save_slot_description">Slot %1$d, %2$s</string>
+    <string name="save_replaces">This replaces \"%1$s\" in slot %2$d. You can undo it straight after.</string>
+    <string name="save_confirm">SAVE</string>
 </resources>
