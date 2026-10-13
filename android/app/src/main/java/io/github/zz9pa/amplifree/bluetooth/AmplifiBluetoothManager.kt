@@ -50,6 +50,10 @@ class AmplifiBluetoothManager(private val context: Context) {
         private const val KEEPALIVE_QUIET_MS = 2_500L
         private const val LINK_DEAD_MS = 10_000L
         private const val MAX_NAME_LENGTH = 32
+        private const val SESSION_RETRIES = 3
+        private const val SESSION_RETRY_WAIT_MS = 10_000L
+        /** Slot id the amp uses for device-wide settings such as master volume. */
+        private const val GLOBAL_SLOT = -1
         private const val MAX_BACKUPS = 30
         private const val NAME_CACHE = "preset_names.json"
         private const val MODEL_CACHE = "models.json"
@@ -63,6 +67,8 @@ class AmplifiBluetoothManager(private val context: Context) {
         val responses = Channel<Record>(Channel.UNLIMITED)
         val events = Channel<Record>(Channel.UNLIMITED)
         val connected = CompletableDeferred<Unit>()
+        /** Set when the amp has closed this stream; it answers nothing more until it is reopened. */
+        @Volatile var closed = false
         /** Commands are answered strictly in order, so only one may be in flight. */
         val callLock = Mutex()
     }
@@ -165,6 +171,9 @@ class AmplifiBluetoothManager(private val context: Context) {
 
     private var symbols: SymbolTable? = null
     @Volatile private var tunerActive = false
+    /** (slot, param) pairs we have subscribed to, and which preset parameter each one is. */
+    private val subscribed = HashSet<Long>()
+    @Volatile private var eventParams: Map<Long, PresetCodec.Param> = emptyMap()
     @Volatile private var tunerSlotId = -1
     @Volatile private var tunerNoteId = -1
     @Volatile private var suppressPatchEventsUntil = 0L
@@ -242,7 +251,7 @@ class AmplifiBluetoothManager(private val context: Context) {
      * automatically when they do.
      */
     @SuppressLint("MissingPermission")
-    private suspend fun connectLoop(device: HardwareDevice, gen: Int) {
+    private suspend fun connectLoop(device: HardwareDevice, gen: Int, attempt: Int = 0) {
         teardown()
         _needsLink.value = false
         _hardwareState.value = _hardwareState.value.copy(
@@ -287,6 +296,7 @@ class AmplifiBluetoothManager(private val context: Context) {
 
         sessionScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         tunerOps = Channel(Channel.UNLIMITED)
+        subscribed.clear(); eventParams = emptyMap()
         sessionScope.launch { for (on in tunerOps) { if (on) doStartTuner() else doStopTuner() } }
         socket = s; input = s.inputStream; output = s.outputStream
         isRunning = true; stalled = false; synced = false
@@ -309,7 +319,16 @@ class AmplifiBluetoothManager(private val context: Context) {
         sessionScope.launch { for (p in outbox) { if (isRunning) sendPayload(p) } }
         sessionScope.launch { keepAlive() }
 
-        startSession(device)
+        val outcome = startSession(device)
+        if (outcome == SessionStart.NOT_ACCEPTED && attempt < SESSION_RETRIES && current(gen)) {
+            // The amp keeps a session that was cut off (app killed) open for a while and ignores a
+            // new one until it times out. Give it time and try again.
+            _status.value = "Waiting for the amp to be ready…"
+            delay(SESSION_RETRY_WAIT_MS)
+            if (current(gen)) connectLoop(device, gen, attempt + 1)
+            return
+        }
+        if (outcome == SessionStart.NOT_ACCEPTED) fail("The amp didn't accept the connection. Power-cycle it and retry.")
     }
 
     /** The amp is paired but Android has not connected it: prompt, then wait for the connection. */
@@ -420,6 +439,7 @@ class AmplifiBluetoothManager(private val context: Context) {
         while (isRunning) {
             delay(1_000)
             sendStreamHeartbeats()
+            checkStreams()
             val quiet = System.currentTimeMillis() - lastRx
             if (quiet > KEEPALIVE_QUIET_MS) {
                 if (BuildConfig.DEBUG) Log.d(TAG, "quiet for ${quiet}ms, probing")
@@ -432,6 +452,59 @@ class AmplifiBluetoothManager(private val context: Context) {
             }
         }
     }
+
+    @Volatile private var recovering = false
+
+    /** If the amp closed a stream, open it again (once at a time) instead of staying silent for good. */
+    private fun checkStreams() {
+        if (recovering || !_ready.value) return
+        val dead = listOfNotNull(librarian, editor).firstOrNull { it.closed } ?: return
+        recovering = true
+        sessionScope.launch {
+            try { reopenStream(dead.aux) } finally { recovering = false }
+        }
+    }
+
+    /**
+     * Open [aux]'s stream again with a fresh connect and repeat that service's handshake. The
+     * amp is happy to start a new stream on a port it has closed.
+     */
+    private suspend fun reopenStream(aux: Int): Boolean {
+        val table = symbols ?: return false
+        val isEditor = aux == AmplifiProtocol.AUX_EDITOR
+        val name = if (isEditor) "editor" else "preset"
+        Log.i(TAG, "reopening the $name stream")
+        val svc = Service(aux)
+        if (!isEditor) svc.parser.skip = AmplifiProtocol.LIBRARIAN_HELLO.size
+        if (isEditor) editor = svc else librarian = svc
+        streamLock.withLock { outbox.trySend(svc.stream.connectSegment()) }
+        if (withTimeoutOrNull(STEP_TIMEOUT_MS) { svc.connected.await() } == null) {
+            Log.w(TAG, "the amp did not accept a new $name stream"); svc.closed = true; return false
+        }
+        if (!isEditor) {
+            if (!streamWrite(svc, AmplifiProtocol.LIBRARIAN_HELLO)) return false
+            withTimeoutOrNull(STEP_TIMEOUT_MS) { while (svc.parser.skip > 0) delay(20) }
+        }
+        call(svc, AmplifiProtocol.CMD_GET_VERSION) ?: run { Log.w(TAG, "$name stream: no version reply"); return false }
+        val hs = call(svc, AmplifiProtocol.CMD_HANDSHAKE, table.crcBytes())
+        if (hs == null || hs.result != 0) { Log.w(TAG, "$name stream: handshake failed"); return false }
+        Log.i(TAG, "the $name stream is back")
+        if (isEditor) {
+            subscribed.clear()
+            subscribeToParamEvents()
+            readMaster()
+        } else {
+            // The tone list may have been cut short when the stream closed; finish it.
+            val mac = connectedMac()
+            if (mac != null && _ampPresets.value.size < _slotCount.value && _scanProgress.value == null) {
+                sessionScope.launch { scanPresets(mac, _slotCount.value) }
+            }
+        }
+        return true
+    }
+
+    /** Debug aid: force the librarian to be reopened. */
+    fun debugReopen(aux: Int) { sessionScope.launch { reopenStream(aux) } }
 
     /** Keep both streams alive from our side too; see [ServiceStream.heartbeatSegment]. */
     private suspend fun sendStreamHeartbeats() {
@@ -528,6 +601,10 @@ class AmplifiBluetoothManager(private val context: Context) {
             val seg = Segment.parse(frame) ?: continue
             val svc = serviceForSrc(seg.aux) ?: continue
             val inbound = svc.stream.onFrame(frame)
+            if ((seg.flags and ServiceStream.FLAG_CLOSED) != 0 && seg.type == 1 && !svc.closed) {
+                Log.w(TAG, "the amp closed the ${if (svc.aux == AmplifiProtocol.AUX_EDITOR) "editor" else "preset"} stream")
+                svc.closed = true
+            }
             if (BuildConfig.DEBUG) Log.d("AmplifiRX", "in  aux=${seg.aux.toString(16)} type=${seg.type} ctr=${seg.ctr} " +
                 "fl=${seg.flags.toString(16)} win=${seg.window} len=${seg.payload.size} new=${inbound.newBytes.size}")
             if (inbound.isConnect && !svc.connected.isCompleted) svc.connected.complete(Unit)
@@ -577,6 +654,7 @@ class AmplifiBluetoothManager(private val context: Context) {
     private suspend fun call(
         svc: Service, cmd: Int, args: ByteArray = ByteArray(0), timeoutMs: Long = STEP_TIMEOUT_MS
     ): Record? = svc.callLock.withLock {
+        if (svc.closed) return@withLock null
         while (svc.responses.tryReceive().isSuccess) { /* discard stale */ }
         if (!streamWrite(svc, AmplifiProtocol.command(cmd, args))) return@withLock null
         withTimeoutOrNull(timeoutMs) { svc.responses.receive() }
@@ -584,7 +662,9 @@ class AmplifiBluetoothManager(private val context: Context) {
 
     // ---- session start --------------------------------------------------------------------
 
-    private suspend fun startSession(device: HardwareDevice) {
+    private enum class SessionStart { OK, NOT_ACCEPTED, FAILED }
+
+    private suspend fun startSession(device: HardwareDevice): SessionStart {
         _status.value = "Opening session…"
         val ed = Service(AmplifiProtocol.AUX_EDITOR)
         val lib = Service(AmplifiProtocol.AUX_LIBRARIAN)
@@ -597,16 +677,16 @@ class AmplifiBluetoothManager(private val context: Context) {
             outbox.trySend(lib.stream.connectSegment())
         }
         val connected = withTimeoutOrNull(STEP_TIMEOUT_MS) { ed.connected.await(); lib.connected.await() }
-        if (connected == null) { fail("The amp didn't accept the connection. Power-cycle it and retry."); return }
+        if (connected == null) return SessionStart.NOT_ACCEPTED
 
-        if (!streamWrite(lib, AmplifiProtocol.LIBRARIAN_HELLO)) { fail("Couldn't open the preset service"); return }
+        if (!streamWrite(lib, AmplifiProtocol.LIBRARIAN_HELLO)) { fail("Couldn't open the preset service"); return SessionStart.FAILED }
         withTimeoutOrNull(STEP_TIMEOUT_MS) { while (lib.parser.skip > 0) delay(20) }
 
-        call(lib, AmplifiProtocol.CMD_GET_VERSION) ?: run { fail("The amp isn't answering"); return }
+        call(lib, AmplifiProtocol.CMD_GET_VERSION) ?: run { fail("The amp isn't answering"); return SessionStart.FAILED }
         val count = call(lib, AmplifiProtocol.CMD_LIB_GET_NUM_PRESETS)?.data?.let { le32(it) } ?: 0
         if (count in 1..1000) _slotCount.value = count
 
-        val table = obtainSymbolTable(lib, device) ?: return
+        val table = obtainSymbolTable(lib, device) ?: return SessionStart.FAILED
         symbols = table
 
         _status.value = "Handshaking…"
@@ -616,11 +696,11 @@ class AmplifiBluetoothManager(private val context: Context) {
             // The cached table doesn't match this amp (different model or firmware).
             File(context.filesDir, SYMBOL_CACHE_PREFIX + device.macAddress.replace(":", "")).delete()
             fail("The amp rejected the symbol table (result ${libHs?.result}). Reconnect to download it again.")
-            return
+            return SessionStart.FAILED
         }
         call(ed, AmplifiProtocol.CMD_GET_VERSION)
         val edHs = call(ed, AmplifiProtocol.CMD_HANDSHAKE, crc)
-        if (edHs == null || edHs.result != 0) { fail("The editor service rejected the handshake"); return }
+        if (edHs == null || edHs.result != 0) { fail("The editor service rejected the handshake"); return SessionStart.FAILED }
 
         // Read-only queries the original app also makes at startup.
         call(ed, AmplifiProtocol.CMD_ED_GET_DIRTY_STATE)
@@ -629,14 +709,16 @@ class AmplifiBluetoothManager(private val context: Context) {
         _ready.value = true
         _status.value = "Connected"
         Log.i(TAG, "session ready: $count presets, ${table.size} symbols")
+        sessionScope.launch { readMaster() }
 
         readLivePreset()
         loadCachedNames(device.macAddress)
         loadCachedModels(device.macAddress)
         sessionScope.launch {
             scanPresets(device.macAddress, if (count in 1..1000) count else 100)
-            if (_models.value.isEmpty()) harvestModels(device.macAddress)
+            if (_models.value.isEmpty() || _paramInfo.value.isEmpty()) harvestModels(device.macAddress)
         }
+        return SessionStart.OK
     }
 
     private fun le32(b: ByteArray): Int =
@@ -677,6 +759,9 @@ class AmplifiBluetoothManager(private val context: Context) {
         val table = symbols ?: return false
         return runCatching {
             val p = PresetCodec.decode(body, table.names)
+            if (BuildConfig.DEBUG) p.blocks().firstOrNull { it.symbol == AmplifiProtocol.ROUTING_BLOCK }?.params?.forEach {
+                Log.d("AmplifiRX", "routing param ${it.name} type=${it.record.type} value=${it.record.asInt}/${it.record.asFloat}")
+            }
             _livePreset.value = p
             _dirty.value = false              // what we show is what the amp has
             _activeTone.value = p.name.ifBlank { null }
@@ -692,18 +777,44 @@ class AmplifiBluetoothManager(private val context: Context) {
             Log.w(TAG, "readLivePreset failed: ${r?.result}"); return false
         }
         _loadedFrom.value = null              // the live tone's origin is unknown from here
-        return publish(r.body)
+        val ok = publish(r.body)
+        if (ok) sessionScope.launch { subscribeToParamEvents() }
+        return ok
     }
 
     fun refreshLiveTone() { sessionScope.launch { if (_ready.value) readLivePreset() } }
 
+    /** Slots that would not answer even after a retry (damaged?); skipped so they cannot stall the rest. */
+    private val badSlots = HashSet<Int>()
+
+    /** The preset stream once it is usable, waiting a little while it is being reopened. */
+    private suspend fun awaitLibrarian(timeoutMs: Long = 10_000): Service? {
+        val end = System.currentTimeMillis() + timeoutMs
+        while (isRunning && System.currentTimeMillis() < end) {
+            librarian?.let { if (!it.closed && it.connected.isCompleted) return it }
+            delay(100)
+        }
+        return null
+    }
+
+    /** Ask for [cmd] on the preset stream, once more after a failure; null if the slot never answers. */
+    private suspend fun libCallForSlot(slot: Int, cmd: Int, timeoutMs: Long): Record? {
+        repeat(2) {
+            val lib = awaitLibrarian() ?: return null
+            call(lib, cmd, AmplifiProtocol.u32(slot), timeoutMs)?.let { return it }
+        }
+        Log.w(TAG, "slot $slot does not answer; skipping it")
+        badSlots.add(slot)
+        return null
+    }
+
     private suspend fun scanPresets(mac: String, total: Int) {
-        val lib = librarian ?: return
         val found = mutableListOf<Pair<Int, String>>()
         for (i in 0 until total) {
             if (!isRunning || stalled) break
+            if (i in badSlots) continue
             _scanProgress.value = i to total
-            val r = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_NAME, AmplifiProtocol.u32(i), 3_000) ?: continue
+            val r = libCallForSlot(i, AmplifiProtocol.CMD_LIB_GET_PRESET_NAME, 3_000) ?: continue
             if (r.result != 0) continue
             val name = AmplifiProtocol.parsePresetName(r.body)
             if (name.isNotEmpty()) found += i to name
@@ -711,7 +822,7 @@ class AmplifiBluetoothManager(private val context: Context) {
         }
         _scanProgress.value = null
         if (found.isNotEmpty()) { _ampPresets.value = found.toList(); saveCachedNames(mac, found) }
-        Log.i(TAG, "preset list: ${found.size} of $total")
+        Log.i(TAG, "preset list: ${found.size} of $total" + if (badSlots.isNotEmpty()) " (skipped $badSlots)" else "")
     }
 
     fun rescanPresets() {
@@ -764,23 +875,74 @@ class AmplifiBluetoothManager(private val context: Context) {
     private val _models = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     val models: StateFlow<Map<String, List<String>>> = _models.asStateFlow()
 
-    /** Read every stored tone once and note which model each block has held. */
+    /** The amp's master volume (a device setting, not part of a tone), 0..1; null until read. */
+    private val _masterVolume = MutableStateFlow<Float?>(null)
+    val masterVolume: StateFlow<Float?> = _masterVolume.asStateFlow()
+    @Volatile private var masterParamId = -1
+
+    private suspend fun readMaster() {
+        val table = symbols ?: return
+        val ed = editor ?: return
+        val pid = table.id("Master") ?: return
+        masterParamId = pid
+        val r = call(ed, AmplifiProtocol.CMD_ED_GET_DSP_MODEL_PARAM, AmplifiProtocol.dspEventArgs(GLOBAL_SLOT, pid), 2_000)
+        if (r != null && r.result == 0 && r.body.size >= 8) {
+            val bb = ByteBuffer.wrap(r.body).order(ByteOrder.LITTLE_ENDIAN)
+            val type = bb.int
+            if (type == AmplifiProtocol.VALUE_TYPE_FLOAT) _masterVolume.value = bb.float
+        }
+        call(ed, AmplifiProtocol.CMD_ED_REGISTER_DSP_EVENT, AmplifiProtocol.dspEventArgs(GLOBAL_SLOT, pid), 1_500)
+        Log.i(TAG, "master volume = ${_masterVolume.value}")
+    }
+
+    fun setMasterVolume(vol: Float) {
+        val pid = masterParamId
+        if (pid < 0 || !_ready.value) return
+        _masterVolume.value = vol
+        enqueueParam("master", AmplifiProtocol.setDspParamFloat(GLOBAL_SLOT, pid, vol))
+    }
+
+    /** What the amp's stored tones tell us about each parameter, keyed "<model>.<param>". */
+    private val _paramInfo = MutableStateFlow<Map<String, ParamInfo>>(emptyMap())
+    val paramInfo: StateFlow<Map<String, ParamInfo>> = _paramInfo.asStateFlow()
+
+    /** Key under which a block's parameter is remembered: by model where there is one. */
+    private fun paramKey(b: PresetCodec.Block, name: String) = (b.flow ?: b.symbol) + "." + name
+
+    private fun record(stats: ParamStatsBuilder, blocks: List<PresetCodec.Block>) {
+        for (b in blocks) for (p in b.params) when {
+            p.isFloat -> stats.addFloat(paramKey(b, p.name), p.record.asFloat)
+            p.isInt -> stats.addChoice(paramKey(b, p.name), p.record.type, p.record.asInt)
+            p.isBool -> stats.addChoice(paramKey(b, p.name), PresetCodec.TYPE_BOOL, p.record.asInt)
+        }
+    }
+
+    /** Symbol name for an id (choice parameters store their value as a symbol id). */
+    fun symbolName(id: Int): String = symbols?.name(id) ?: "#$id"
+
+    /** Read every stored tone once and note which model each block has held, and how parameters range. */
     private suspend fun harvestModels(mac: String) {
-        val lib = librarian ?: return
         val table = symbols ?: return
         val found = LinkedHashMap<String, MutableSet<String>>()
-        _livePreset.value?.blocks()?.forEach { b -> b.flow?.let { found.getOrPut(b.symbol) { sortedSetOf() }.add(it) } }
+        val stats = ParamStatsBuilder()
+        _livePreset.value?.blocks()?.let { bl ->
+            bl.forEach { b -> b.flow?.let { found.getOrPut(b.symbol) { sortedSetOf() }.add(it) } }
+            record(stats, bl)
+        }
         for (i in 0 until _slotCount.value) {
             if (!isRunning || stalled) return
             _status.value = "Learning your amp's models… ${i + 1}/${_slotCount.value}"
-            val r = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(i), 10_000) ?: continue
+            if (i in badSlots) continue
+            val r = libCallForSlot(i, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, 10_000) ?: continue
             if (r.result != 0 || r.body.isEmpty()) continue
-            runCatching { PresetCodec.decode(r.body, table.names).blocks() }.getOrNull()?.forEach { b ->
-                b.flow?.let { found.getOrPut(b.symbol) { sortedSetOf() }.add(it) }
+            runCatching { PresetCodec.decode(r.body, table.names).blocks() }.getOrNull()?.let { bl ->
+                bl.forEach { b -> b.flow?.let { found.getOrPut(b.symbol) { sortedSetOf() }.add(it) } }
+                record(stats, bl)
             }
             if (i % 10 == 9) _models.value = found.mapValues { it.value.toList() }
         }
         _models.value = found.mapValues { it.value.toList() }
+        _paramInfo.value = stats.build()
         saveCachedModels(mac)
         if (_ready.value) _status.value = "Connected"
         Log.i(TAG, "models learned: " + _models.value.entries.joinToString { "${it.key}=${it.value.size}" })
@@ -830,6 +992,13 @@ class AmplifiBluetoothManager(private val context: Context) {
             _models.value = m.keys().asSequence().associateWith { k ->
                 m.getJSONArray(k).let { a -> (0 until a.length()).map { a.getString(it) } }
             }
+            o.optJSONObject("params")?.let { pi ->
+                _paramInfo.value = pi.keys().asSequence().associateWith { k ->
+                    val e = pi.getJSONObject(k)
+                    ParamInfo(e.getInt("t"), e.getDouble("lo").toFloat(), e.getDouble("hi").toFloat(),
+                        e.getJSONArray("v").let { a -> (0 until a.length()).map { a.getInt(it) } })
+                }
+            }
         }
     }
 
@@ -837,7 +1006,14 @@ class AmplifiBluetoothManager(private val context: Context) {
         runCatching {
             val m = JSONObject()
             _models.value.forEach { (k, v) -> m.put(k, JSONArray(v)) }
-            File(context.filesDir, MODEL_CACHE).writeText(JSONObject().put("mac", mac).put("models", m).toString())
+            val pi = JSONObject()
+            _paramInfo.value.forEach { (k, v) ->
+                pi.put(k, JSONObject().put("t", v.type).put("lo", v.min.toDouble()).put("hi", v.max.toDouble())
+                    .put("v", JSONArray(v.values)))
+            }
+            File(context.filesDir, MODEL_CACHE).writeText(
+                JSONObject().put("mac", mac).put("models", m).put("params", pi).toString()
+            )
         }
     }
 
@@ -927,13 +1103,14 @@ class AmplifiBluetoothManager(private val context: Context) {
             // Keep what is there now. A timeout means we can't tell, so don't overwrite blind;
             // a clean "no such preset" answer means the slot is empty.
             val old = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000)
-            if (old == null) { _saveStatus.value = "The amp didn't answer, so nothing was changed"; return@launch }
+            if (old == null) { Log.w(TAG, "save: no answer reading slot $index"); _saveStatus.value = "The amp didn't answer, so nothing was changed"; return@launch }
             val previous = old.body.takeIf { old.result == 0 && it.isNotEmpty() }
             if (previous != null) backUp(index, previous)
 
             suppressPatchEventsUntil = System.currentTimeMillis() + 3_000
             val set = call(lib, AmplifiProtocol.CMD_LIB_SET_PRESET_FILE, AmplifiProtocol.setPresetFileArgs(body, index), 15_000)
             if (set == null || set.result != 0) {
+                Log.w(TAG, "save: SetPresetFile refused: reply=${set != null} result=${set?.result} bytes=${body.size}")
                 _saveStatus.value = "The amp refused to store it (result ${set?.result}). Nothing was changed."
                 return@launch
             }
@@ -951,6 +1128,7 @@ class AmplifiBluetoothManager(private val context: Context) {
             _activeTone.value = name
             _presetRevision.value = _presetRevision.value + 1
             _dirty.value = false
+            Log.i(TAG, "save: slot $index name='$name' verified=$verified bytes=${body.size}")
             _saveStatus.value = if (verified) "Saved to slot $index as \"$name\""
                                 else "Stored in slot $index, but reading it back didn't match. Check it on the amp."
         }
@@ -975,6 +1153,73 @@ class AmplifiBluetoothManager(private val context: Context) {
                     connectedMac()?.let { saveCachedNames(it, _ampPresets.value) }
                 }
             }
+        }
+    }
+
+    /**
+     * Debug aid: read slot [index] and write exactly the same bytes back, then read it again.
+     * Harmless if it works, and it shows whether writing to a stored slot is accepted at all.
+     */
+    fun debugWriteBack(index: Int) {
+        sessionScope.launch {
+            val lib = librarian ?: return@launch
+            val a = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000)
+            if (a == null || a.result != 0 || a.body.isEmpty()) { Log.w(TAG, "writeback: couldn't read slot $index"); return@launch }
+            backUp(index, a.body)
+            Log.i(TAG, "writeback: read slot $index (${a.body.size} bytes), writing it back")
+            val t0 = System.currentTimeMillis()
+            val w = call(lib, AmplifiProtocol.CMD_LIB_SET_PRESET_FILE, AmplifiProtocol.setPresetFileArgs(a.body, index), 20_000)
+            Log.i(TAG, "writeback: SetPresetFile -> reply=${w != null} result=${w?.result} in ${System.currentTimeMillis() - t0} ms")
+            val b = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000)
+            Log.i(TAG, "writeback: read again -> reply=${b != null} same=${b != null && b.body.contentEquals(a.body)}")
+            val n = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_NAME, AmplifiProtocol.u32(index), 3_000)
+            Log.i(TAG, "writeback: name -> reply=${n != null} '${n?.let { AmplifiProtocol.parsePresetName(it.body) }}'")
+        }
+    }
+
+    /** Debug aid: write the newest backup of slot [index] back into it. */
+    fun debugRestoreBackup(index: Int) {
+        sessionScope.launch {
+            val dir = File(context.filesDir, "backups")
+            val f = dir.listFiles()?.filter { it.name.startsWith("slot${index}_") }?.maxByOrNull { it.lastModified() }
+            if (f == null) { Log.w(TAG, "restore: no backup for slot $index"); return@launch }
+            val body = f.readBytes()
+            val lib = awaitLibrarian() ?: run { Log.w(TAG, "restore: no preset stream"); return@launch }
+            Log.i(TAG, "restore: writing ${f.name} (${body.size} bytes) into slot $index")
+            val w = call(lib, AmplifiProtocol.CMD_LIB_SET_PRESET_FILE, AmplifiProtocol.setPresetFileArgs(body, index), 20_000)
+            Log.i(TAG, "restore: SetPresetFile -> reply=${w != null} result=${w?.result}")
+            badSlots.remove(index)
+            val n = libCallForSlot(index, AmplifiProtocol.CMD_LIB_GET_PRESET_NAME, 3_000)
+            Log.i(TAG, "restore: slot $index now reads '${n?.let { AmplifiProtocol.parsePresetName(it.body) }}'")
+        }
+    }
+
+    /** Debug aid: compare the live tone's bytes with stored slot [index] (read-only). */
+    fun debugDiffLiveWithSlot(index: Int) {
+        sessionScope.launch {
+            val lib = librarian ?: return@launch
+            val live = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(AmplifiProtocol.LIVE_PRESET), 10_000)
+            val slot = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000)
+            if (live == null || slot == null) { Log.w(TAG, "diff: read failed"); return@launch }
+            val a = live.body; val b = slot.body
+            runCatching {
+                File(context.filesDir, "debug_live.bin").writeBytes(a)
+                File(context.filesDir, "debug_slot.bin").writeBytes(b)
+            }
+            Log.i(TAG, "diff: live ${a.size} bytes, slot $index ${b.size} bytes, equal=${a.contentEquals(b)}")
+            val n = minOf(a.size, b.size)
+            val diffs = (0 until n).filter { a[it] != b[it] }
+            Log.i(TAG, "diff: ${diffs.size} differing bytes in the common part; first at " + diffs.take(8))
+            fun hex(x: ByteArray, from: Int, len: Int) =
+                x.copyOfRange(from.coerceAtLeast(0), minOf(x.size, from + len)).joinToString("") { "%02x".format(it) }
+            diffs.firstOrNull()?.let { d ->
+                Log.i(TAG, "diff: live  @${d - 8}: " + hex(a, d - 8, 32))
+                Log.i(TAG, "diff: slot  @${d - 8}: " + hex(b, d - 8, 32))
+            }
+            Log.i(TAG, "diff: live head " + hex(a, 0, 40))
+            Log.i(TAG, "diff: slot head " + hex(b, 0, 40))
+            Log.i(TAG, "diff: live tail " + hex(a, a.size - 24, 24))
+            Log.i(TAG, "diff: slot tail " + hex(b, b.size - 24, 24))
         }
     }
 
@@ -1004,13 +1249,15 @@ class AmplifiBluetoothManager(private val context: Context) {
                 patchRefreshJob?.cancel()
                 patchRefreshJob = sessionScope.launch { delay(500); readLivePreset() }
             }
-            Record.TYPE_PARAM_EVENT -> {
-                if (tunerActive && rec.data.size >= 16) {
+            Record.TYPE_PARAM_EVENT, Record.TYPE_PARAM_CHANGED -> {
+                if (rec.data.size >= 16) {
                     val bb = ByteBuffer.wrap(rec.data).order(ByteOrder.LITTLE_ENDIAN)
-                    val slot = bb.int; val param = bb.int; val valueType = bb.int
-                    if (slot == tunerSlotId && param == tunerNoteId && valueType == AmplifiProtocol.VALUE_TYPE_FLOAT) {
-                        val v = bb.float
+                    val slot = bb.int; val param = bb.int; val valueType = bb.int; val raw = bb.int
+                    if (tunerActive && slot == tunerSlotId && param == tunerNoteId && valueType == AmplifiProtocol.VALUE_TYPE_FLOAT) {
+                        val v = java.lang.Float.intBitsToFloat(raw)
                         _tunerNote.value = if (v.isNaN() || v < 0f) null else v   // -1 means no note
+                    } else {
+                        onParamChanged(slot, param, valueType, raw)
                     }
                 }
             }
@@ -1039,6 +1286,61 @@ class AmplifiBluetoothManager(private val context: Context) {
         tunerActive = on?.result == 0 && reg?.result == 0
         _ampTunerEngaged.value = tunerActive
         Log.i(TAG, "amp tuner: enable=${on?.result} register=${reg?.result} active=$tunerActive")
+    }
+
+    private fun eventKey(slot: Int, param: Int): Long = (slot.toLong() shl 32) or (param.toLong() and 0xFFFFFFFFL)
+
+    /**
+     * Ask the amp to tell us when any parameter of the live tone changes, so turning a knob on the
+     * amp moves the matching control here. Each (slot, parameter) is subscribed once per session.
+     */
+    private suspend fun subscribeToParamEvents() {
+        val table = symbols ?: return
+        val ed = editor ?: return
+        val preset = _livePreset.value ?: return
+        val map = HashMap<Long, PresetCodec.Param>()
+        for (b in preset.blocks()) {
+            val slot = table.id(b.symbol) ?: continue
+            for (pr in b.params) {
+                if (!(pr.isFloat || pr.isBool || pr.isInt)) continue
+                val pid = table.id(AmplifiProtocol.editorParamName(b.symbol, pr.name)) ?: continue
+                val k = eventKey(slot, pid)
+                map[k] = pr
+                if (subscribed.add(k) && isRunning) {
+                    call(ed, AmplifiProtocol.CMD_ED_REGISTER_DSP_EVENT, AmplifiProtocol.dspEventArgs(slot, pid), 1_500)
+                    delay(20)           // don't burst: the amp has been seen to close a stream under load
+                }
+            }
+        }
+        eventParams = map
+        Log.i(TAG, "subscribed to ${subscribed.size} parameters")
+    }
+
+    /** A parameter changed on the amp itself: mirror it into the editor. */
+    private fun onParamChanged(slot: Int, param: Int, valueType: Int, raw: Int) {
+        if (slot == GLOBAL_SLOT && param == masterParamId && valueType == AmplifiProtocol.VALUE_TYPE_FLOAT) {
+            _masterVolume.value = java.lang.Float.intBitsToFloat(raw)
+            return
+        }
+        val pr = eventParams[eventKey(slot, param)] ?: return
+        val changed = when (valueType) {
+            AmplifiProtocol.VALUE_TYPE_FLOAT -> {
+                val v = java.lang.Float.intBitsToFloat(raw)
+                (pr.record.asFloat != v).also { if (it) pr.record.setFloat(v) }
+            }
+            AmplifiProtocol.VALUE_TYPE_BOOL -> {
+                (pr.record.asBool != (raw != 0)).also { if (it) pr.record.setBool(raw != 0) }
+            }
+            AmplifiProtocol.VALUE_TYPE_INT -> {
+                (pr.record.asInt != raw).also { if (it) pr.record.setInt(raw) }
+            }
+            else -> false
+        }
+        if (changed) {
+            if (BuildConfig.DEBUG) Log.d("AmplifiRX", "amp changed ${pr.name} (type $valueType)")
+            _dirty.value = true
+            _presetRevision.value = _presetRevision.value + 1
+        }
     }
 
     /** Debug aid: poll the tuner block's values directly and log them, to see what the amp reports. */
@@ -1104,10 +1406,6 @@ class AmplifiBluetoothManager(private val context: Context) {
     }
 
     // ---- UI contract kept for the existing screens ---------------------------------------------------------
-
-    fun setMasterVolume(vol: Float) {
-        _hardwareState.value = _hardwareState.value.copy(masterVolume = vol)
-    }
 
     fun setGuitarVolume(vol: Float) {
         _hardwareState.value = _hardwareState.value.copy(guitarVolume = vol)

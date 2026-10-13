@@ -51,6 +51,11 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 val (block, model) = s.split(".", limit = 2).let { it[0] to it.getOrElse(1) { "" } }
                 mgr.swapModel(block, model)
             }
+            "reopen" -> mgr.debugReopen(if (arg == 0) AmplifiProtocol.AUX_EDITOR else AmplifiProtocol.AUX_LIBRARIAN)
+            "restore" -> mgr.debugRestoreBackup(arg)
+            "diff" -> mgr.debugDiffLiveWithSlot(arg)
+            "save" -> mgr.saveLiveToSlot(arg, s)
+            "writeback" -> mgr.debugWriteBack(arg)
             "tunerprobe" -> mgr.probeTuner(if (arg > 0) arg else 10)
             "tuner" -> if (arg != 0) mgr.startAmpTuner() else mgr.stopAmpTuner()
             "symbols" -> {

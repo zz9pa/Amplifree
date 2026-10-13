@@ -77,6 +77,13 @@ class StreamLayerTest {
     }
 
     @Test
+    fun aClosedFlagFromTheAmpIsVisibleOnTheParsedSegment() {
+        val seg = Segment.parse(ampFrame(lib, 49, ServiceStream.FLAG_CLOSED, 976, ByteArray(0)))!!
+        assertEquals(ServiceStream.FLAG_CLOSED, seg.flags and ServiceStream.FLAG_CLOSED)
+        assertEquals(0, Segment.parse(ampFrame(lib, 50, ServiceStream.FLAG_HEARTBEAT, 976, ByteArray(0)))!!.flags and ServiceStream.FLAG_CLOSED)
+    }
+
+    @Test
     fun heartbeatIsEmptyFlaggedAndAdvancesTheCounterOnly() {
         val st = ServiceStream(lib)
         st.connectSegment()

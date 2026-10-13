@@ -106,6 +106,8 @@ class ServiceStream(val aux: Int) {
         const val FLAG_ACK = 0x08
         /** Set on the amp's empty once-a-second keep-alive segments. */
         const val FLAG_HEARTBEAT = 0x10
+        /** Seen on a segment the amp sends just before it stops answering on that stream: it closed it. */
+        const val FLAG_CLOSED = 0x02
     }
 
     val src: Int = AmplifiProtocol.srcForAux(aux)
@@ -232,6 +234,8 @@ class Record(val type: Int, val data: ByteArray) {
         const val TYPE_PATCH_EVENT = 3
         /** {slotId, paramId, valueType, value}: a parameter the app subscribed to has changed. */
         const val TYPE_PARAM_EVENT = 2
+        /** Same layout as [TYPE_PARAM_EVENT]: a parameter was changed (e.g. a knob turned on the amp). */
+        const val TYPE_PARAM_CHANGED = 4
     }
 }
 

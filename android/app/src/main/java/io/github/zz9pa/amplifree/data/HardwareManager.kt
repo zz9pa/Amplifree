@@ -105,6 +105,11 @@ class HardwareManager(context: Context) {
     val models: StateFlow<Map<String, List<String>>> = bt.models
 
     fun swapModel(block: String, model: String) = bt.swapModel(block, model)
+
+    /** Ranges and choices learned from the amp's tones, keyed "<model>.<param>". */
+    val paramInfo: StateFlow<Map<String, io.github.zz9pa.amplifree.bluetooth.ParamInfo>> = bt.paramInfo
+    fun symbolName(id: Int): String = bt.symbolName(id)
+    fun setLiveInt(block: String, param: String, value: Int) = bt.setLiveParam(block, param, int = value)
     fun modelChoices(block: String): List<String> = bt.modelChoices(block)
 
     /** Download the preset names from the amp again. */
@@ -120,6 +125,8 @@ class HardwareManager(context: Context) {
     fun startAmpTuner() = bt.startAmpTuner()
     fun stopAmpTuner() = bt.stopAmpTuner()
 
+    /** The amp's master volume, 0..1, or null until read. */
+    val masterVolume: StateFlow<Float?> = bt.masterVolume
     fun setMasterVolume(vol: Float) = bt.setMasterVolume(vol)
     fun setGuitarVolume(vol: Float) = bt.setGuitarVolume(vol)
 }

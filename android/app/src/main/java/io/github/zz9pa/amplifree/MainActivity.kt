@@ -87,6 +87,8 @@ class MainActivity : ComponentActivity() {
                 val loadedFrom by hw.loadedFrom.collectAsStateWithLifecycle()
                 val slotCount by hw.slotCount.collectAsStateWithLifecycle()
                 val models by hw.models.collectAsStateWithLifecycle()
+                val paramInfo by hw.paramInfo.collectAsStateWithLifecycle()
+                val masterVolume by hw.masterVolume.collectAsStateWithLifecycle()
                 var showSaveDialog by remember { mutableStateOf(false) }
 
                 Scaffold(
@@ -125,6 +127,11 @@ class MainActivity : ComponentActivity() {
                                 onUndo = { hw.undoLastSave() },
                                 onDismissSaveStatus = { hw.clearSaveStatus() },
                                 modelChoices = { blk -> models.size; hw.modelChoices(blk) },
+                                paramInfo = paramInfo,
+                                symbolName = { id -> hw.symbolName(id) },
+                                onSetInt = { b, pm, v -> hw.setLiveInt(b, pm, v) },
+                                masterVolume = masterVolume,
+                                onMasterVolume = { v -> hw.setMasterVolume(v) },
                                 onSwapModel = { b, m -> hw.swapModel(b, m) }
                             )
                             AmplifreeUiState.TAB_TONES -> ToneBrowserScreen(

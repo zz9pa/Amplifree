@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.zz9pa.amplifree.bluetooth.ParamInfo
 import io.github.zz9pa.amplifree.bluetooth.PresetCodec
 import io.github.zz9pa.amplifree.ui.dialogs.ModelPickerDialog
 import io.github.zz9pa.amplifree.ui.ModelNames
@@ -76,6 +77,11 @@ fun SignalChainEditorScreen(
     onUndo: () -> Unit = {},
     onDismissSaveStatus: () -> Unit = {},
     modelChoices: (block: String) -> List<String> = { emptyList() },
+    paramInfo: Map<String, ParamInfo> = emptyMap(),
+    symbolName: (Int) -> String = { "#$it" },
+    onSetInt: (block: String, param: String, value: Int) -> Unit = { _, _, _ -> },
+    masterVolume: Float? = null,
+    onMasterVolume: (Float) -> Unit = {},
     onSwapModel: (block: String, model: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
@@ -139,6 +145,21 @@ fun SignalChainEditorScreen(
             }
         }
 
+        if (masterVolume != null) {
+            item {
+                SectionCard("MASTER VOLUME") {
+                    ParamSlider(
+                        label = "Master",
+                        initial = masterVolume,
+                        range = 0f..1f,
+                        enabled = isConnected,
+                        key = "master.${masterVolume}",
+                        onCommit = onMasterVolume
+                    )
+                }
+            }
+        }
+
         // ---- pedal / block on-off switches ----------------------------------
         if (routing != null) {
             val switches = routing.params.filter { it.isBool && it.name.endsWith("EnableState") }
@@ -181,16 +202,43 @@ fun SignalChainEditorScreen(
             }
         }
 
+        // ---- mix levels and routing (they live on the routing block) ---------
+        if (routing != null) {
+            val others = routing.params.filter {
+                (it.isFloat || it.isBool || it.isInt) && !(it.isBool && it.name.endsWith("EnableState"))
+            }
+            if (others.isNotEmpty()) {
+                item {
+                    SectionCard("MIX & ROUTING") {
+                        others.forEach { p ->
+                            ParamRow(
+                                blockSymbol = ROUTING,
+                                p = p,
+                                info = paramInfo[ROUTING + "." + p.name] ?: paramInfo[(routing.flow ?: ROUTING) + "." + p.name],
+                                label = routingLabel(p.name),
+                                revision = revision,
+                                isConnected = isConnected,
+                                symbolName = symbolName,
+                                onSetFloat = onSetFloat,
+                                onSetBool = onSetBool,
+                                onSetInt = onSetInt
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- one card per module, with its real parameters ------------------
         items(chain, key = { it.symbol }) { block ->
-            val floats = block.params.filter { it.isFloat }
             val choices = modelChoices(block.symbol)
             SectionCard(
                 title = (BLOCK_LABELS[block.symbol] ?: block.symbol).uppercase(),
                 subtitle = block.flow?.let { ModelNames.name(it) + if (choices.size > 1 && isConnected) "  ▾" else "" },
                 onSubtitleClick = if (choices.size > 1 && isConnected) ({ picking = block.symbol }) else null
             ) {
-                if (floats.isEmpty()) {
+                val editable = block.params.filter { it.isFloat || it.isBool || it.isInt }
+                if (editable.isEmpty()) {
                     Text(
                         "No adjustable parameters",
                         color = AmpTextSecondary,
@@ -198,16 +246,18 @@ fun SignalChainEditorScreen(
                         fontSize = 11.sp
                     )
                 } else {
-                    floats.forEach { p ->
-                        ParamSlider(
+                    editable.forEach { p ->
+                        ParamRow(
+                            blockSymbol = block.symbol,
+                            p = p,
+                            info = paramInfo[(block.flow ?: block.symbol) + "." + p.name],
                             label = prettyParam(p.name),
-                            initial = p.record.asFloat,
-                            enabled = isConnected,
-                            key = "${block.symbol}.${p.name}.$revision",
-                            onCommit = { v ->
-                                p.record.setFloat(v)
-                                onSetFloat(block.symbol, p.name, v)
-                            }
+                            revision = revision,
+                            isConnected = isConnected,
+                            symbolName = symbolName,
+                            onSetFloat = onSetFloat,
+                            onSetBool = onSetBool,
+                            onSetInt = onSetInt
                         )
                     }
                 }
@@ -216,12 +266,14 @@ fun SignalChainEditorScreen(
 
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Saving is switched off until the stored-tone format is handled correctly: writing the
+                // live tone's layout into a slot makes the amp go silent (see the hardware notes).
                 Button(
                     onClick = onSave,
-                    enabled = isConnected,
+                    enabled = false,
                     modifier = Modifier.fillMaxWidth().testTag("save_button"),
                     colors = ButtonDefaults.buttonColors(containerColor = AmpGold, contentColor = AmpMetallicDark)
-                ) { Text(if (dirty) "SAVE TO AMP…" else "SAVE AS…", fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+                ) { Text("SAVE (COMING SOON)", fontWeight = FontWeight.Bold, fontSize = 12.sp) }
                 if (saveStatus != null) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -330,23 +382,93 @@ private fun SectionCard(
     }
 }
 
+/** "FX1Mix" -> "FX 1 Mix"; "FX1Post" -> "FX 1 after amp"; "ChannelVolume" -> "Channel Volume". */
+private fun routingLabel(name: String): String {
+    val base = name.removeSuffix("State")
+    val spaced = base.replace(Regex("(?<=[a-z])(?=[A-Z0-9])|(?<=[A-Z])(?=[0-9])|(?<=[0-9])(?=[A-Z])"), " ")
+    val cap = spaced.replaceFirstChar { it.uppercase() }
+    return when {
+        cap.endsWith(" Post") -> cap.removeSuffix(" Post").replace("Volume", "Volume Pedal") + " after amp"
+        else -> cap
+    }
+}
+
+/** One editable parameter: a slider, a switch or a choice, depending on its type. */
+@Composable
+private fun ParamRow(
+    blockSymbol: String,
+    p: PresetCodec.Param,
+    info: ParamInfo?,
+    label: String,
+    revision: Int,
+    isConnected: Boolean,
+    symbolName: (Int) -> String,
+    onSetFloat: (String, String, Float) -> Unit,
+    onSetBool: (String, String, Boolean) -> Unit,
+    onSetInt: (String, String, Int) -> Unit
+) {
+    val k = "$blockSymbol.${p.name}.$revision"
+    when {
+        p.isFloat -> {
+            val v = p.record.asFloat
+            ParamSlider(
+                label = label,
+                initial = v,
+                range = info?.sliderRange(v) ?: (if (v in 0f..1f) 0f..1f else null),
+                enabled = isConnected,
+                key = k,
+                onCommit = { nv ->
+                    p.record.setFloat(nv)
+                    onSetFloat(blockSymbol, p.name, nv)
+                }
+            )
+        }
+        p.isBool -> BoolRow(
+            label = label,
+            initial = p.record.asBool,
+            enabled = isConnected,
+            key = k,
+            onChange = { nv ->
+                p.record.setBool(nv)
+                onSetBool(blockSymbol, p.name, nv)
+            }
+        )
+        else -> {
+            val isEnum = p.record.type == PresetCodec.TYPE_ENUM
+            val nameOf: (Int) -> String =
+                if (isEnum) { id -> ModelNames.tidy(symbolName(id)) } else { id -> id.toString() }
+            ChoiceRow(
+                label = label,
+                current = p.record.asInt,
+                options = (info?.values.orEmpty() + p.record.asInt).distinct().sorted(),
+                nameOf = nameOf,
+                enabled = isConnected,
+                key = k,
+                onPick = { nv ->
+                    p.record.setInt(nv)
+                    onSetInt(blockSymbol, p.name, nv)
+                }
+            )
+        }
+    }
+}
+
 /**
- * Slider that only pushes on release. A guitar preset parameter change is a
- * command on the wire, so streaming every pixel of a drag would flood the
- * link; committing on release keeps it responsive without spamming.
+ * Slider that only pushes on release. A parameter change is a command on the wire, so streaming
+ * every pixel of a drag would flood the link; committing on release keeps it responsive.
+ * [range] null means the range is not known, so the value is shown but cannot be changed.
  */
 @Composable
 private fun ParamSlider(
     label: String,
     initial: Float,
+    range: ClosedFloatingPointRange<Float>?,
     enabled: Boolean,
     key: String,
     onCommit: (Float) -> Unit
 ) {
     var value by remember(key) { mutableFloatStateOf(initial) }
-    // Parameter ranges are not known yet: only 0..1 values are safe to drag (a threshold in dB,
-    // say, would be squashed into 0..1 and sent to the amp). Anything else is shown, not edited.
-    if (initial !in 0f..1f) {
+    if (range == null) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween
@@ -357,6 +479,7 @@ private fun ParamSlider(
         }
         return
     }
+    val unit = range.start >= 0f && range.endInclusive <= 1f
     Column(Modifier.padding(vertical = 2.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -364,16 +487,17 @@ private fun ParamSlider(
         ) {
             Text(label, color = AmpTextPrimary, style = MaterialTheme.typography.bodyMedium)
             Text(
-                "%.2f".format(value),
+                if (unit) "%.2f".format(value) else "%.1f".format(value),
                 color = AmpTextSecondary,
                 style = MaterialTheme.typography.bodySmall,
                 fontSize = 11.sp
             )
         }
         Slider(
-            value = value.coerceIn(0f, 1f),
+            value = value.coerceIn(range),
             onValueChange = { value = it },
             onValueChangeFinished = { onCommit(value) },
+            valueRange = range,
             enabled = enabled,
             colors = SliderDefaults.colors(
                 thumbColor = AmpGold,
@@ -382,5 +506,60 @@ private fun ParamSlider(
             ),
             modifier = Modifier.testTag("param_$label")
         )
+    }
+}
+
+@Composable
+private fun BoolRow(label: String, initial: Boolean, enabled: Boolean, key: String, onChange: (Boolean) -> Unit) {
+    var on by remember(key) { mutableStateOf(initial) }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = AmpTextPrimary, style = MaterialTheme.typography.bodyMedium)
+        Switch(
+            checked = on,
+            enabled = enabled,
+            onCheckedChange = { on = it; onChange(it) },
+            colors = SwitchDefaults.colors(checkedThumbColor = AmpGold, checkedTrackColor = AmpSurfaceVariant),
+            modifier = Modifier.testTag("bool_$label")
+        )
+    }
+}
+
+/** A choice-type parameter: tap to pick from the values this amp's tones have used. */
+@Composable
+private fun ChoiceRow(
+    label: String,
+    current: Int,
+    options: List<Int>,
+    nameOf: (Int) -> String,
+    enabled: Boolean,
+    key: String,
+    onPick: (Int) -> Unit
+) {
+    var chosen by remember(key) { mutableIntStateOf(current) }
+    var open by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = AmpTextPrimary, style = MaterialTheme.typography.bodyMedium)
+        Box {
+            val canPick = enabled && options.size > 1
+            TextButton(onClick = { open = true }, enabled = canPick, modifier = Modifier.testTag("choice_$label")) {
+                Text(nameOf(chosen) + if (canPick) "  ▾" else "", color = AmpCyanLight, fontSize = 12.sp)
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                options.forEach { o ->
+                    DropdownMenuItem(
+                        text = { Text(nameOf(o)) },
+                        onClick = { open = false; chosen = o; onPick(o) }
+                    )
+                }
+            }
+        }
     }
 }
