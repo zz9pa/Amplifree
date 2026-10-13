@@ -25,14 +25,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.zz9pa.amplifree.ui.AmplifreeUiState
 import io.github.zz9pa.amplifree.ui.AmplifreeViewModel
 import io.github.zz9pa.amplifree.ui.LinkStatus
+import io.github.zz9pa.amplifree.ui.WIDE_LAYOUT_MIN_WIDTH
 import io.github.zz9pa.amplifree.ui.friendlyStatus
 import io.github.zz9pa.amplifree.ui.components.TopHardwareHeader
 import io.github.zz9pa.amplifree.ui.dialogs.ConnectionDialog
@@ -41,9 +40,6 @@ import io.github.zz9pa.amplifree.ui.screens.SignalChainEditorScreen
 import io.github.zz9pa.amplifree.ui.screens.ToneBrowserScreen
 import io.github.zz9pa.amplifree.ui.screens.TunerScreen
 import io.github.zz9pa.amplifree.ui.theme.*
-
-/** Window width from which the app switches to its wide layout (side rail, two-column editor). */
-val WIDE_LAYOUT_MIN_WIDTH: Dp = 720.dp
 
 class MainActivity : ComponentActivity() {
     private val viewModel: AmplifreeViewModel by viewModels()
@@ -180,7 +176,9 @@ class MainActivity : ComponentActivity() {
                                         AmplifreeUiState.TAB_TUNER -> TunerScreen(
                                             tunerState = tunerState,
                                             tunerEngine = viewModel.tunerEngine,
-                                            ampReady = connected
+                                            link = link,
+                                            status = friendly,
+                                            onConnect = openConnection
                                         )
                                     }
                                 }

@@ -51,4 +51,23 @@
     <string name="tones_slot">Slot %1$d</string>
     <string name="tones_active">Active</string>
     <string name="tones_load_action">Load this tone</string>
+
+    <!-- Tuner tab -->
+    <string name="tuner_title">CHROMATIC GUITAR TUNER</string>
+    <string name="tuner_subtitle">Reading from your amp</string>
+    <string name="tuner_disconnected_body">Connect your amp to use its built-in tuner. The tuner listens through the amp, never through the phone\'s microphone.</string>
+    <string name="tuner_play_note">Play a note</string>
+    <string name="tuner_no_signal">NO SIGNAL</string>
+    <string name="tuner_in_tune">IN TUNE ✓</string>
+    <string name="tuner_cents">%1$+.0f CENTS</string>
+    <string name="tuner_hz">%1$.1f Hz</string>
+    <string name="tuner_gauge_none">Tuner: no signal. Play a note.</string>
+    <string name="tuner_gauge_reading">Tuner: note %1$s, %2$.1f hertz, %3$s</string>
+    <string name="tuner_gauge_in_tune">in tune</string>
+    <string name="tuner_gauge_cents">%1$+.0f cents</string>
+    <string name="tuner_tap_string">TAP A STRING TO LOCK ON TO IT</string>
+    <string name="tuner_string_hz">%1$.0fHz</string>
+    <string name="tuner_string_description">String %1$s, %2$.0f hertz</string>
+    <string name="tuner_string_lock">Lock the tuner to this string</string>
+    <string name="tuner_string_unlock">Go back to automatic string detection</string>
 </resources>
