@@ -70,4 +70,54 @@
     <string name="tuner_string_description">String %1$s, %2$.0f hertz</string>
     <string name="tuner_string_lock">Lock the tuner to this string</string>
     <string name="tuner_string_unlock">Go back to automatic string detection</string>
+
+    <!-- Editor tab: blocks of the signal chain -->
+    <string name="block_routing">Routing</string>
+    <string name="block_gate">Noise Gate</string>
+    <string name="block_volume_pedal">Volume Pedal</string>
+    <string name="block_wah">Wah</string>
+    <string name="block_fx1">FX 1</string>
+    <string name="block_fx2">FX 2</string>
+    <string name="block_fx3">FX 3</string>
+    <string name="block_fx4">FX 4</string>
+    <string name="block_amp">Amplifier</string>
+    <string name="block_air">Air</string>
+    <string name="block_studio_cab">Studio Cab</string>
+    <string name="block_live_cab">Live Cab</string>
+    <string name="block_post_comp">Compressor</string>
+    <string name="block_post_eq">EQ</string>
+
+    <!-- Editor tab: cards and shortcut chips -->
+    <string name="section_master">MASTER VOLUME</string>
+    <string name="section_path">SIGNAL PATH</string>
+    <string name="section_mix">MIX &amp; ROUTING</string>
+    <string name="param_master">Master</string>
+    <string name="chip_amp">Amp</string>
+    <string name="chip_cab">Cab</string>
+    <string name="chip_studio_cab">Studio Cab</string>
+    <string name="chip_live_cab">Live Cab</string>
+    <string name="chip_fx">FX %1$d</string>
+    <string name="chip_mix">Mix</string>
+    <string name="editor_jump_to">Jump to %1$s</string>
+    <string name="editor_jump_row">Jump to a section</string>
+    <string name="card_collapse">Collapse %1$s</string>
+    <string name="card_expand">Expand %1$s</string>
+    <string name="card_change_model">Change model</string>
+    <string name="card_model_description">%1$s model: %2$s</string>
+    <string name="card_no_params">No adjustable parameters</string>
+
+    <!-- Editor tab: header, states and footer -->
+    <string name="editor_live_tone">Live Tone</string>
+    <string name="editor_modified">● MODIFIED</string>
+    <string name="editor_modified_description">Tone modified</string>
+    <string name="editor_banner_disconnected">Not connected — changes won\'t reach the amp</string>
+    <string name="editor_disconnected_body">Connect your amp and the tone that is playing on it appears here, ready to edit: every pedal, the amp and the cab.</string>
+    <string name="editor_reading_title">Reading your tone…</string>
+    <string name="editor_reading_body">Your amp\'s current tone is on its way. Every pedal, the amp and the cab will show up here.</string>
+    <string name="editor_save_coming_soon">SAVE (COMING SOON)</string>
+    <string name="editor_undo">UNDO</string>
+    <string name="editor_dismiss">OK</string>
+    <string name="editor_browse_tones">BROWSE TONES</string>
+    <string name="editor_reload">RELOAD FROM AMP</string>
+    <string name="choice_open_action">Choose a value</string>
 </resources>

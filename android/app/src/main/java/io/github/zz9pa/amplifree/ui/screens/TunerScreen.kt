@@ -39,7 +39,7 @@ import io.github.zz9pa.amplifree.data.TunerEngine
 import io.github.zz9pa.amplifree.data.TunerState
 import io.github.zz9pa.amplifree.ui.FriendlyStatus
 import io.github.zz9pa.amplifree.ui.LinkStatus
-import io.github.zz9pa.amplifree.ui.WIDE_LAYOUT_MIN_WIDTH
+import io.github.zz9pa.amplifree.ui.WIDE_CONTENT_MIN_WIDTH
 import io.github.zz9pa.amplifree.ui.components.ConnectPrompt
 import io.github.zz9pa.amplifree.ui.theme.*
 import kotlin.math.cos
@@ -73,7 +73,7 @@ fun TunerScreen(
     val fontScale = LocalDensity.current.fontScale
 
     BoxWithConstraints(modifier = modifier.fillMaxSize().background(AmpMetallicDark)) {
-        val wide = maxWidth >= WIDE_LAYOUT_MIN_WIDTH
+        val wide = maxWidth >= WIDE_CONTENT_MIN_WIDTH
         // The gauge grows a little with the font size but always fits what is on screen.
         val wanted = 260.dp * fontScale.coerceIn(1f, 1.4f)
         val gaugeSize: Dp = if (wide) {

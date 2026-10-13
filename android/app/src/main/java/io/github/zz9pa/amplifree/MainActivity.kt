@@ -140,8 +140,9 @@ class MainActivity : ComponentActivity() {
                                         AmplifreeUiState.TAB_EDITOR -> SignalChainEditorScreen(
                                             preset = livePreset,
                                             revision = presetRevision,
-                                            isConnected = connected,
-                                            statusText = status,
+                                            link = link,
+                                            status = friendly,
+                                            onConnect = openConnection,
                                             onSetFloat = { b, p, v -> hw.setLiveFloat(b, p, v) },
                                             onSetBool = { b, p, v -> hw.setLiveBool(b, p, v) },
                                             onOpenPresets = { viewModel.selectTab(AmplifreeUiState.TAB_TONES) },
