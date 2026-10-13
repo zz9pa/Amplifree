@@ -104,33 +104,36 @@ fun ToneBrowserScreen(
 
         Spacer(Modifier.height(4.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = when {
-                    scanProgress != null ->
-                        stringResource(R.string.tones_scanning, scanProgress.first, scanProgress.second)
-                    ampPresets.isEmpty() -> ""
-                    query.isBlank() ->
-                        resources.getQuantityString(R.plurals.tones_count, ampPresets.size, ampPresets.size)
-                    else -> stringResource(R.string.tones_filtered_count, filtered.size, ampPresets.size)
-                },
-                style = MaterialTheme.typography.labelMedium,
-                color = AmpTextSecondary,
-                modifier = Modifier.weight(1f)
-            )
-            val refreshDescription = stringResource(R.string.tones_refresh_description)
-            AmpOutlinedButton(
-                text = stringResource(R.string.tones_refresh),
-                onClick = onRescan,
-                enabled = isReady && scanProgress == null,
-                modifier = Modifier
-                    .semantics { contentDescription = refreshDescription }
-                    .testTag("tone_refresh")
-            )
+        // With nothing listed the empty states below carry their own Refresh/Connect action.
+        if (ampPresets.isNotEmpty() || scanProgress != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = when {
+                        scanProgress != null ->
+                            stringResource(R.string.tones_scanning, scanProgress.first, scanProgress.second)
+                        ampPresets.isEmpty() -> ""
+                        query.isBlank() ->
+                            resources.getQuantityString(R.plurals.tones_count, ampPresets.size, ampPresets.size)
+                        else -> stringResource(R.string.tones_filtered_count, filtered.size, ampPresets.size)
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = AmpTextSecondary,
+                    modifier = Modifier.weight(1f)
+                )
+                val refreshDescription = stringResource(R.string.tones_refresh_description)
+                AmpOutlinedButton(
+                    text = stringResource(R.string.tones_refresh),
+                    onClick = onRescan,
+                    enabled = isReady && scanProgress == null,
+                    modifier = Modifier
+                        .semantics { contentDescription = refreshDescription }
+                        .testTag("tone_refresh")
+                )
+            }
         }
 
         if (scanProgress != null) {

@@ -892,7 +892,7 @@ private fun ChoiceRow(
     key: String,
     onPick: (Int) -> Unit
 ) {
-    var chosen by rememberSaveable(key) { mutableIntStateOf(current) }
+    var chosen by rememberSaveable(key) { mutableStateOf(current) }
     var open by rememberSaveable(key) { mutableStateOf(false) }
     val canPick = enabled && options.size > 1
     val action = stringResource(R.string.choice_open_action)
