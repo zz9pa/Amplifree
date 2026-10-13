@@ -1,0 +1,8 @@
+# Normalise line endings: LF in the repository on every platform.
+* text=auto eol=lf
+
+# Never treat these as text.
+*.jpg binary
+*.png binary
+*.webp binary
+*.jar binary

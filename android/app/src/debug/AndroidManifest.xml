@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug builds only: lets the amp session be driven from adb. -->
+        <receiver
+            android:name="io.github.zz9pa.amplifree.bluetooth.DebugCommandReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.github.zz9pa.amplifree.AMPDBG" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

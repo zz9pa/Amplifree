@@ -1,0 +1,32 @@
+# Build output / IDE
+build/
+.gradle/
+.kotlin/
+.idea/
+*.iml
+.cxx/
+.externalNativeBuild/
+local.properties
+.DS_Store
+
+# Secrets
+.env
+*.keystore
+*.jks
+google-services.json
+
+# Belt and braces: never let proprietary or captured material in by accident
+*.apk
+*.aab
+*.so
+*.dex
+*.pdf
+*.log
+*.pkl
+*.pcap
+*.pcapng
+*.bin
+captures/
+decompiled/
+disasm/
+btsnoop*
