@@ -55,11 +55,38 @@ class StreamLayerTest {
         assertEquals(1, Bsp.splitFrames(a).size)
     }
 
+    /** An odd-sized frame is padded to 4 bytes, so the next frame starts after the padding. */
+    @Test
+    fun splitFramesSkipsPaddingAfterOddSizedFrames() {
+        val odd = ampFrame(lib, 5, 0x0c, 540, ByteArray(9) { 7 })       // 25 bytes on its own
+        val ack = ampFrame(lib, 6, 0x10, 540, ByteArray(0))             // 16 bytes
+        val wire = odd + ByteArray(3) + ack                             // 3 padding bytes between
+        val parts = Bsp.splitFrames(wire)
+        assertEquals(2, parts.size)
+        assertEquals(9, Segment.parse(parts[0])!!.payload.size)          // padding is not payload
+        assertEquals(6, Segment.parse(parts[1])!!.ctr)
+        // padding after the last frame must not turn into a bogus extra frame
+        assertEquals(1, Bsp.splitFrames(odd + ByteArray(3)).size)
+    }
+
     @Test
     fun aMalformedTailIsKeptRatherThanDropped() {
         val a = ampFrame(lib, 2, 0x04, 600, ByteArray(4))
         val truncated = a.copyOf(a.size - 2)
         assertEquals(1, Bsp.splitFrames(truncated).size)
+    }
+
+    @Test
+    fun heartbeatIsEmptyFlaggedAndAdvancesTheCounterOnly() {
+        val st = ServiceStream(lib)
+        st.connectSegment()
+        val before = st.txSent
+        val seg = Segment.parse(st.heartbeatSegment())!!
+        assertEquals(0, seg.payload.size)
+        assertEquals(ServiceStream.FLAG_HEARTBEAT, seg.flags and ServiceStream.FLAG_HEARTBEAT)
+        assertEquals(2, seg.ctr)
+        assertEquals(3, Segment.parse(st.heartbeatSegment())!!.ctr)
+        assertEquals(before, st.txSent)
     }
 
     // ---- connect ---------------------------------------------------------------------
@@ -335,10 +362,11 @@ class StreamLayerTest {
     @Test
     fun eventsAreDistinguishedFromResponses() {
         val p = RecordParser()
-        val ev = TestSupport.hex("06000000" + "08000000" + "04000000" + "0000803f")  // {6, 8, float 1.0}
+        // {type 2, len 16, slot, param, float type, 1.0f}
+        val ev = TestSupport.hex("02000000" + "10000000" + "4b020000" + "52020000" + "04000000" + "0000803f")
         val rec = p.feed(ev).single()
-        assertEquals(Record.TYPE_VALUE_EVENT, rec.type)
-        assertEquals(1.0f, ByteBuffer.wrap(rec.data).order(ByteOrder.LITTLE_ENDIAN).let { it.int; it.float }, 0f)
+        assertEquals(Record.TYPE_PARAM_EVENT, rec.type)
+        assertEquals(1.0f, ByteBuffer.wrap(rec.data).order(ByteOrder.LITTLE_ENDIAN).let { it.int; it.int; it.int; it.float }, 0f)
     }
 
     @Test

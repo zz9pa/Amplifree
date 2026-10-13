@@ -1,6 +1,7 @@
 package io.github.zz9pa.amplifree.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,6 +15,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.zz9pa.amplifree.bluetooth.PresetCodec
+import io.github.zz9pa.amplifree.ui.dialogs.ModelPickerDialog
+import io.github.zz9pa.amplifree.ui.ModelNames
 import io.github.zz9pa.amplifree.ui.theme.*
 
 /**
@@ -66,8 +69,17 @@ fun SignalChainEditorScreen(
     onSetBool: (block: String, param: String, value: Boolean) -> Unit,
     onOpenPresets: () -> Unit,
     onReload: () -> Unit,
+    dirty: Boolean = false,
+    saveStatus: String? = null,
+    canUndo: Boolean = false,
+    onSave: () -> Unit = {},
+    onUndo: () -> Unit = {},
+    onDismissSaveStatus: () -> Unit = {},
+    modelChoices: (block: String) -> List<String> = { emptyList() },
+    onSwapModel: (block: String, model: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
+    var picking by remember { mutableStateOf<String?>(null) }
     if (preset == null) {
         EmptyEditor(isConnected, statusText, onOpenPresets, modifier)
         return
@@ -77,6 +89,16 @@ fun SignalChainEditorScreen(
     val blocks = remember(preset, revision) { preset.blocks() }
     val routing = blocks.firstOrNull { it.symbol == ROUTING }
     val chain = blocks.filter { it.symbol != ROUTING }
+
+    picking?.let { sym ->
+        ModelPickerDialog(
+            title = BLOCK_LABELS[sym] ?: sym,
+            current = blocks.firstOrNull { it.symbol == sym }?.flow,
+            options = modelChoices(sym),
+            onPick = { m -> picking = null; onSwapModel(sym, m) },
+            onDismiss = { picking = null }
+        )
+    }
 
     LazyColumn(
         modifier = modifier
@@ -89,12 +111,25 @@ fun SignalChainEditorScreen(
     ) {
         item {
             Column {
-                Text(
-                    text = preset.name.ifBlank { "Live Tone" },
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = AmpGold,
-                    fontWeight = FontWeight.ExtraBold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = preset.name.ifBlank { "Live Tone" },
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = AmpGold,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (dirty) {
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "● MODIFIED",
+                            color = AmpOrangeGlow,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.testTag("modified_chip")
+                        )
+                    }
+                }
                 Text(
                     text = if (isConnected) statusText else "Not connected — changes won't reach the amp",
                     style = MaterialTheme.typography.bodySmall,
@@ -149,9 +184,11 @@ fun SignalChainEditorScreen(
         // ---- one card per module, with its real parameters ------------------
         items(chain, key = { it.symbol }) { block ->
             val floats = block.params.filter { it.isFloat }
+            val choices = modelChoices(block.symbol)
             SectionCard(
                 title = (BLOCK_LABELS[block.symbol] ?: block.symbol).uppercase(),
-                subtitle = block.flow
+                subtitle = block.flow?.let { ModelNames.name(it) + if (choices.size > 1 && isConnected) "  ▾" else "" },
+                onSubtitleClick = if (choices.size > 1 && isConnected) ({ picking = block.symbol }) else null
             ) {
                 if (floats.isEmpty()) {
                     Text(
@@ -172,6 +209,33 @@ fun SignalChainEditorScreen(
                                 onSetFloat(block.symbol, p.name, v)
                             }
                         )
+                    }
+                }
+            }
+        }
+
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onSave,
+                    enabled = isConnected,
+                    modifier = Modifier.fillMaxWidth().testTag("save_button"),
+                    colors = ButtonDefaults.buttonColors(containerColor = AmpGold, contentColor = AmpMetallicDark)
+                ) { Text(if (dirty) "SAVE TO AMP…" else "SAVE AS…", fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+                if (saveStatus != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(saveStatus, color = AmpCyanLight, fontSize = 11.sp,
+                            modifier = Modifier.weight(1f).testTag("save_status"))
+                        if (canUndo) TextButton(onClick = onUndo) {
+                            Text("UNDO", color = AmpGold, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        }
+                        TextButton(onClick = onDismissSaveStatus) {
+                            Text("OK", color = AmpTextSecondary, fontSize = 11.sp)
+                        }
                     }
                 }
             }
@@ -235,6 +299,7 @@ private fun EmptyEditor(isConnected: Boolean, statusText: String, onOpenPresets:
 private fun SectionCard(
     title: String,
     subtitle: String? = null,
+    onSubtitleClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Surface(
@@ -253,7 +318,10 @@ private fun SectionCard(
                     color = AmpGold, fontWeight = FontWeight.ExtraBold)
                 if (!subtitle.isNullOrBlank()) {
                     Text(subtitle, style = MaterialTheme.typography.bodySmall,
-                        color = AmpCyanLight, fontSize = 10.sp)
+                        color = AmpCyanLight, fontSize = 10.sp,
+                        modifier = if (onSubtitleClick != null)
+                            Modifier.clickable { onSubtitleClick() }.padding(vertical = 4.dp).testTag("model_$title")
+                        else Modifier)
                 }
             }
             Spacer(Modifier.height(8.dp))
@@ -276,6 +344,19 @@ private fun ParamSlider(
     onCommit: (Float) -> Unit
 ) {
     var value by remember(key) { mutableFloatStateOf(initial) }
+    // Parameter ranges are not known yet: only 0..1 values are safe to drag (a threshold in dB,
+    // say, would be squashed into 0..1 and sent to the amp). Anything else is shown, not edited.
+    if (initial !in 0f..1f) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label, color = AmpTextSecondary, style = MaterialTheme.typography.bodyMedium)
+            Text("%.2f".format(initial), color = AmpTextSecondary,
+                style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
+        }
+        return
+    }
     Column(Modifier.padding(vertical = 2.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -283,7 +364,7 @@ private fun ParamSlider(
         ) {
             Text(label, color = AmpTextPrimary, style = MaterialTheme.typography.bodyMedium)
             Text(
-                "%.0f%%".format(value * 100f),
+                "%.2f".format(value),
                 color = AmpTextSecondary,
                 style = MaterialTheme.typography.bodySmall,
                 fontSize = 11.sp

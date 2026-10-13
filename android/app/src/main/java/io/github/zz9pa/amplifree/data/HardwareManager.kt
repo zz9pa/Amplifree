@@ -59,20 +59,53 @@ class HardwareManager(context: Context) {
     /** True while the amp's own tuner is engaged. */
     val ampTunerEngaged: StateFlow<Boolean> = bt.ampTunerEngaged
 
-    /** Pitch from the amp's own tuner in Hz, or null when no note is detected. */
-    val tunerHz: StateFlow<Float?> = bt.tunerHz
+    /** Note from the amp's own tuner as semitones above A (modulo 12), or null when no note is played. */
+    val tunerNote: StateFlow<Float?> = bt.tunerNote
 
     val availableDevices: List<HardwareDevice>
         get() = bt.getDiscoveredDevices()
 
+    /** True while the app is waiting for the user to connect the amp in Android's Bluetooth settings. */
+    val needsLink: StateFlow<Boolean> = bt.needsLink
+
+    /** Whether Android currently lists this amp as connected. */
+    fun isLinked(device: HardwareDevice) = bt.isLinked(device.macAddress)
+
     fun connectDevice(device: HardwareDevice) = bt.connectToDevice(device)
     fun disconnect() = bt.disconnect()
+
+    /** Reconnect to the amp used last time. Call once the Bluetooth permission is granted. */
+    fun autoConnect() = bt.autoConnect()
 
     /** Make one of the amp's stored presets the live tone and show it in the editor. */
     fun loadStoredPreset(index: Int, label: String? = null) = bt.loadStoredPreset(index, label)
 
     /** Re-read the live tone (e.g. after changing it with the amp's own controls). */
     fun refreshLiveTone() = bt.refreshLiveTone()
+
+    /** True once the tone has been edited here and not yet saved. */
+    val dirty: StateFlow<Boolean> = bt.dirty
+
+    /** Stored slot the current tone came from, when known. */
+    val loadedFrom: StateFlow<Int?> = bt.loadedFrom
+
+    val slotCount: StateFlow<Int> = bt.slotCount
+
+    /** Progress / outcome of the last save, or null. */
+    val saveStatus: StateFlow<String?> = bt.saveStatus
+
+    /** Slot whose previous contents can be put back, or null. */
+    val undoSlot: StateFlow<Int?> = bt.undoSlot
+
+    fun saveLiveToSlot(index: Int, name: String) = bt.saveLiveToSlot(index, name)
+    fun undoLastSave() = bt.undoLastSave()
+    fun clearSaveStatus() = bt.clearSaveStatus()
+
+    /** Models each block can hold, learned from the amp's own tones. */
+    val models: StateFlow<Map<String, List<String>>> = bt.models
+
+    fun swapModel(block: String, model: String) = bt.swapModel(block, model)
+    fun modelChoices(block: String): List<String> = bt.modelChoices(block)
 
     /** Download the preset names from the amp again. */
     fun rescanPresets() = bt.rescanPresets()

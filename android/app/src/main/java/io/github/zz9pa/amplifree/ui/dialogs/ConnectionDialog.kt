@@ -1,5 +1,7 @@
 package io.github.zz9pa.amplifree.ui.dialogs
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -16,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -39,6 +42,8 @@ fun ConnectionDialog(
     val status by hardwareManager.status.collectAsState()
     val ready by hardwareManager.ready.collectAsState()
     val devices = hardwareManager.availableDevices
+    val needsLink by hardwareManager.needsLink.collectAsState()
+    val context = LocalContext.current
     val connected = hardwareState.connectionState == ConnectionState.CONNECTED
 
     Dialog(onDismissRequest = onDismiss) {
@@ -71,6 +76,28 @@ fun ConnectionDialog(
                     )
                 }
 
+                if (needsLink) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Android has the amp paired but not connected. Tap it in Bluetooth " +
+                        "settings; when it shows Connected, come back and Amplifree finishes " +
+                        "connecting by itself.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AmpTextSecondary,
+                        fontSize = 12.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AmpGold, contentColor = AmpMetallicDark),
+                        modifier = Modifier.testTag("open_bt_settings")
+                    ) { Text("OPEN BLUETOOTH SETTINGS", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                }
+
                 Spacer(Modifier.height(16.dp))
                 Text("PAIRED AMPS", style = MaterialTheme.typography.labelSmall,
                     color = AmpGold, fontWeight = FontWeight.Bold)
@@ -79,7 +106,8 @@ fun ConnectionDialog(
                 if (devices.isEmpty()) {
                     Text(
                         "No paired amp found. Pair it in Android's Bluetooth settings first " +
-                        "(it shows up as an audio device), then come back.",
+                        "(it shows up as an audio device), then come back. After that Amplifree " +
+                        "reconnects to it automatically.",
                         style = MaterialTheme.typography.bodySmall,
                         color = AmpTextSecondary,
                         fontSize = 12.sp

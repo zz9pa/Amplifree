@@ -30,6 +30,7 @@ import io.github.zz9pa.amplifree.ui.AmplifreeUiState
 import io.github.zz9pa.amplifree.ui.AmplifreeViewModel
 import io.github.zz9pa.amplifree.ui.components.TopHardwareHeader
 import io.github.zz9pa.amplifree.ui.dialogs.ConnectionDialog
+import io.github.zz9pa.amplifree.ui.dialogs.SaveToneDialog
 import io.github.zz9pa.amplifree.ui.screens.SignalChainEditorScreen
 import io.github.zz9pa.amplifree.ui.screens.ToneBrowserScreen
 import io.github.zz9pa.amplifree.ui.screens.TunerScreen
@@ -47,12 +48,17 @@ class MainActivity : ComponentActivity() {
                 val context = LocalContext.current
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
-                ) { }
+                ) { granted ->
+                    // Permission just arrived (first run): now we can look for the amp.
+                    if (granted[Manifest.permission.BLUETOOTH_CONNECT] == true) {
+                        viewModel.hardwareManager.autoConnect()
+                    }
+                }
 
-                // BLUETOOTH_CONNECT is needed to talk to the amp (Android 12+); the
-                // microphone is only used by the tuner when the amp's own tuner is unavailable.
+                // BLUETOOTH_CONNECT is needed to talk to the amp (Android 12+). The app asks for
+                // nothing else: the tuner uses the amp, not the microphone.
                 LaunchedEffect(Unit) {
-                    val wanted = mutableListOf(Manifest.permission.RECORD_AUDIO)
+                    val wanted = mutableListOf<String>()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         wanted.add(Manifest.permission.BLUETOOTH_CONNECT)
                     }
@@ -60,6 +66,7 @@ class MainActivity : ComponentActivity() {
                         ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
                     }
                     if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
+                    else viewModel.hardwareManager.autoConnect()
                 }
 
                 val hw = viewModel.hardwareManager
@@ -74,6 +81,13 @@ class MainActivity : ComponentActivity() {
                 val activeTone by hw.activeTone.collectAsStateWithLifecycle()
                 val status by hw.status.collectAsStateWithLifecycle()
                 val connected = hardwareState.connectionState == ConnectionState.CONNECTED && ready
+                val dirty by hw.dirty.collectAsStateWithLifecycle()
+                val saveStatus by hw.saveStatus.collectAsStateWithLifecycle()
+                val undoSlot by hw.undoSlot.collectAsStateWithLifecycle()
+                val loadedFrom by hw.loadedFrom.collectAsStateWithLifecycle()
+                val slotCount by hw.slotCount.collectAsStateWithLifecycle()
+                val models by hw.models.collectAsStateWithLifecycle()
+                var showSaveDialog by remember { mutableStateOf(false) }
 
                 Scaffold(
                     topBar = {
@@ -103,7 +117,15 @@ class MainActivity : ComponentActivity() {
                                 onSetFloat = { b, p, v -> hw.setLiveFloat(b, p, v) },
                                 onSetBool = { b, p, v -> hw.setLiveBool(b, p, v) },
                                 onOpenPresets = { viewModel.selectTab(AmplifreeUiState.TAB_TONES) },
-                                onReload = { hw.refreshLiveTone() }
+                                onReload = { hw.refreshLiveTone() },
+                                dirty = dirty,
+                                saveStatus = saveStatus,
+                                canUndo = undoSlot != null,
+                                onSave = { showSaveDialog = true },
+                                onUndo = { hw.undoLastSave() },
+                                onDismissSaveStatus = { hw.clearSaveStatus() },
+                                modelChoices = { blk -> models.size; hw.modelChoices(blk) },
+                                onSwapModel = { b, m -> hw.swapModel(b, m) }
                             )
                             AmplifreeUiState.TAB_TONES -> ToneBrowserScreen(
                                 ampPresets = ampPresets,
@@ -119,7 +141,19 @@ class MainActivity : ComponentActivity() {
                             )
                             AmplifreeUiState.TAB_TUNER -> TunerScreen(
                                 tunerState = tunerState,
-                                tunerEngine = viewModel.tunerEngine
+                                tunerEngine = viewModel.tunerEngine,
+                                ampReady = connected
+                            )
+                        }
+
+                        if (showSaveDialog) {
+                            SaveToneDialog(
+                                currentName = livePreset?.name.orEmpty(),
+                                suggestedSlot = loadedFrom,
+                                slotCount = slotCount,
+                                existing = ampPresets,
+                                onSave = { slot, name -> hw.saveLiveToSlot(slot, name); showSaveDialog = false },
+                                onDismiss = { showSaveDialog = false }
                             )
                         }
 

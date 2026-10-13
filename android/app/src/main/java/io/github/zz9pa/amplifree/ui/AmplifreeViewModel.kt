@@ -10,10 +10,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 data class AmplifreeUiState(
     val activeTab: Int = TAB_EDITOR,
@@ -50,28 +49,25 @@ class AmplifreeViewModel(application: Application) : AndroidViewModel(applicatio
     fun connectToHardwareDevice(device: HardwareDevice) = hardwareManager.connectDevice(device)
 
     /**
-     * The tuner prefers the amp's own pitch detector (it hears the guitar signal itself,
-     * not the room). If the amp is not connected, or its tuner does not engage, the phone
-     * microphone is used instead.
+     * The tuner is the amp's own: it hears the guitar signal directly, so nothing here touches the
+     * phone's microphone. It runs only while the Tuner tab is showing and the amp is connected.
      */
     private fun onTunerVisible(visible: Boolean) {
         tunerJob?.cancel()
-        if (!visible) {
-            hardwareManager.stopAmpTuner()
-            tunerEngine.toggleTuner(false)
-            return
-        }
+        tunerEngine.setActive(false)
+        if (!visible) { hardwareManager.stopAmpTuner(); return }
         tunerJob = viewModelScope.launch {
-            if (hardwareManager.ready.value) {
+            hardwareManager.ready.collectLatest { ready ->
+                if (!ready) { tunerEngine.setActive(false); return@collectLatest }
                 hardwareManager.startAmpTuner()
-                val engaged = withTimeoutOrNull(3_000) { hardwareManager.ampTunerEngaged.first { it } }
-                if (engaged == true) {
-                    tunerEngine.toggleTuner(false)
-                    hardwareManager.tunerHz.collect { tunerEngine.publishExternal(it) }
-                    return@launch
-                }
+                tunerEngine.setActive(true)
+                hardwareManager.tunerNote.collect { tunerEngine.publishNote(it) }
             }
-            tunerEngine.toggleTuner(true)
         }
+    }
+
+    override fun onCleared() {
+        hardwareManager.stopAmpTuner()
+        super.onCleared()
     }
 }

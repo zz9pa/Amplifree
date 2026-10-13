@@ -47,6 +47,11 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 if (cmd == "param") mgr.setLiveParam(block, param, value = intent.getFloatExtra("f", 0f))
                 else mgr.setLiveParam(block, param, bool = arg != 0)
             }
+            "model" -> {
+                val (block, model) = s.split(".", limit = 2).let { it[0] to it.getOrElse(1) { "" } }
+                mgr.swapModel(block, model)
+            }
+            "tunerprobe" -> mgr.probeTuner(if (arg > 0) arg else 10)
             "tuner" -> if (arg != 0) mgr.startAmpTuner() else mgr.stopAmpTuner()
             "symbols" -> {
                 val dev = mgr.getDiscoveredDevices().firstOrNull()

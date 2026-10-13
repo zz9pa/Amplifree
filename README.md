@@ -38,8 +38,9 @@ original app for the purpose of interoperability. Data that is specific to the a
 ## What this repository does *not* contain
 
 No Line 6 software, firmware, binaries, decompiled or disassembled code, artwork, manuals,
-preset content, or recorded amp traffic. The repository is checked for this before every
-publish. If you spot anything that should not be here, please open an issue and it will be
+preset content, or recorded amp traffic. The single exception is a list of model display
+names (amp, cab and effect names) copied, names only, from Line 6's public knowledge-base page; see
+`NOTICE.md` for the source. The repository is checked for this before every publish. If you spot anything that should not be here, please open an issue and it will be
 removed straight away.
 
 ## Building

@@ -32,7 +32,11 @@ import java.nio.ByteOrder
  *    most 228 - 16 = 212 payload bytes. Larger frames are discarded.
  */
 object Bsp {
-    /** Total frame length is always dst + 8 (header included). */
+    /**
+     * A frame is `dst + 8` bytes (header included), and the next frame starts on the next
+     * 4-byte boundary: the sender pads an odd-sized frame. Ignoring the padding misreads
+     * whatever follows, which silently loses small frames such as bare acknowledgements.
+     */
     fun splitFrames(payload: ByteArray): List<ByteArray> {
         val out = mutableListOf<ByteArray>()
         var off = 0
@@ -40,8 +44,8 @@ object Bsp {
             val h = AmplifiProtocol.unpackBspHeader(payload.copyOfRange(off, off + 8)) ?: break
             var total = h.dst + 8
             if (total < 8 || off + total > payload.size) total = payload.size - off // malformed tail
-            out.add(payload.copyOfRange(off, off + total))
-            off += total
+            out.add(payload.copyOfRange(off, off + total))     // without the padding
+            off += (total + 3) and 3.inv()
         }
         return out
     }
@@ -100,6 +104,8 @@ class ServiceStream(val aux: Int) {
         const val FLAG_SYN = 0x01
         const val FLAG_DATA = 0x04
         const val FLAG_ACK = 0x08
+        /** Set on the amp's empty once-a-second keep-alive segments. */
+        const val FLAG_HEARTBEAT = 0x10
     }
 
     val src: Int = AmplifiProtocol.srcForAux(aux)
@@ -200,6 +206,12 @@ class ServiceStream(val aux: Int) {
         return f
     }
 
+    /**
+     * Empty keep-alive segment, like the amp's own (flag 0x10). The amp stops answering a
+     * stream it hears nothing from for a while, so an idle app has to keep talking.
+     */
+    fun heartbeatSegment(): ByteArray = emit(ByteArray(0), 0, 0, FLAG_HEARTBEAT)
+
     /** Empty segment whose only job is to advertise our updated window. */
     fun ackSegment(): ByteArray {
         val f = emit(ByteArray(0), 0, 0, FLAG_ACK)
@@ -218,7 +230,8 @@ class Record(val type: Int, val data: ByteArray) {
     companion object {
         const val TYPE_RESPONSE = 1
         const val TYPE_PATCH_EVENT = 3
-        const val TYPE_VALUE_EVENT = 6
+        /** {slotId, paramId, valueType, value}: a parameter the app subscribed to has changed. */
+        const val TYPE_PARAM_EVENT = 2
     }
 }
 

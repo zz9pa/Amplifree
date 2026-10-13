@@ -17,6 +17,14 @@ identify the hardware the software is designed to work with.
 This repository contains no Line 6 or Yamaha software, firmware, binaries, decompiled or
 disassembled code, artwork, manuals, preset content or captured device traffic.
 
+The one thing taken from Line 6 is a list of model *display names* (amps, cabs and effects),
+copied from a publicly available source, names only and without the descriptions:
+<https://kb.line6.com/full-list-of-amplifi-firehawk-series-amps-effects-and-cabs>
+(retrieved 2026-10-13). It lives in `android/app/src/main/java/io/github/zz9pa/amplifree/ui/ModelNames.kt`.
+It was not derived from Line 6's software and is not reverse engineered. The names include
+third-party trademarks, used only to identify what a model emulates; this is not a licence from
+Line 6 or from those owners.
+
 ## Open-source dependencies
 
 The Android app builds on AndroidX, Jetpack Compose, Kotlin and kotlinx.coroutines, Room,

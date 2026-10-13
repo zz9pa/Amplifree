@@ -63,6 +63,8 @@ object AmplifiProtocol {
     const val CMD_LIB_GET_PRESET_NAME = 0x0E
 
     // Editor (the live DSP)
+    const val CMD_ED_QUERY_DSP_MODEL = 7
+    const val CMD_ED_LOAD_DSP_MODEL = 8
     const val CMD_ED_GET_DSP_MODEL_PARAM = 9
     const val CMD_ED_SET_DSP_MODEL_PARAM = 10
     const val CMD_ED_REGISTER_DSP_EVENT = 0x0B
@@ -194,6 +196,22 @@ object AmplifiProtocol {
         return bb.array()
     }
 
+    /**
+     * Name out of a GetPresetName reply (the bytes after the result code): a 16-byte header,
+     * then `{length:u32, text[length]}` with the text NUL-terminated.
+     */
+    fun parsePresetName(body: ByteArray): String {
+        if (body.size >= 20) {
+            val len = ByteBuffer.wrap(body, 16, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            if (len in 0..(body.size - 20)) {
+                return body.copyOfRange(20, 20 + len)
+                    .takeWhile { it != 0.toByte() }.toByteArray()
+                    .toString(Charsets.ISO_8859_1).trim()
+            }
+        }
+        return ""
+    }
+
     /** The symbol that holds the routing/enable switches rather than a single module. */
     const val ROUTING_BLOCK = "GuitarProc"
 
@@ -212,18 +230,13 @@ object AmplifiProtocol {
     // ---- the amp's own tuner ------------------------------------------------
     //
     // Engage with SetDspModelParam(Tuner, Enable, 1), then RegisterDspEvent(Tuner,
-    // Note). Readings arrive as float records: semitones from A440, wrapping at 12.
+    // Note). Readings arrive as parameter events {slot, param, float}: semitones above A (modulo
+    // 12, so no octave), with -1 meaning no note.
 
     const val SYM_TUNER = "Tuner"
     const val SYM_TUNER_ENABLE = "Enable"
     const val SYM_TUNER_NOTE = "Note"
 
-    /** Convert the amp's tuner reading to Hz, or null when it reports no pitch. */
-    fun tunerValueToHz(raw: Float): Float? {
-        if (raw.isNaN() || raw < 0f || raw >= 12f) return null
-        val v = if (raw >= 11.5f) raw - 12f else raw
-        return (440.0 * Math.pow(2.0, v / 12.0)).toFloat()
-    }
 
     // ---- RSMC decoding ----------------------------------------------------
 

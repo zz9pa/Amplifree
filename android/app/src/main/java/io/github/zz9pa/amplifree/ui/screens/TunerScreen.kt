@@ -37,6 +37,7 @@ import kotlin.math.sin
 fun TunerScreen(
     tunerState: TunerState,
     tunerEngine: TunerEngine,
+    ampReady: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -65,7 +66,7 @@ fun TunerScreen(
                 letterSpacing = 1.2.sp
             )
             Text(
-                text = "AMPLIFi Hardware & Microphone Signal Sync",
+                text = if (ampReady) "Reading from your amp" else "Connect your amp to use its tuner",
                 style = MaterialTheme.typography.bodySmall,
                 color = AmpTextSecondary,
                 fontSize = 11.sp
@@ -143,7 +144,7 @@ fun TunerScreen(
                 modifier = Modifier.padding(top = 40.dp)
             ) {
                 Text(
-                    text = "${tunerState.noteName}${tunerState.octave}",
+                    text = if (tunerState.signalDetected) "${tunerState.noteName}${tunerState.octave}" else "—",
                     style = MaterialTheme.typography.displayLarge,
                     color = inTuneColor,
                     fontWeight = FontWeight.ExtraBold,
@@ -151,7 +152,7 @@ fun TunerScreen(
                 )
 
                 Text(
-                    text = String.format("%.1f Hz", tunerState.currentFrequency),
+                    text = if (tunerState.signalDetected) String.format("%.1f Hz", tunerState.currentFrequency) else if (ampReady) "Play a note" else "Not connected",
                     style = MaterialTheme.typography.titleMedium,
                     color = AmpTextPrimary,
                     fontWeight = FontWeight.Bold
@@ -164,7 +165,7 @@ fun TunerScreen(
                     modifier = Modifier.padding(top = 8.dp)
                 ) {
                     Text(
-                        text = if (tunerState.isInTune) "IN TUNE ✓" else String.format("%+.1f CENTS", tunerState.centsOffset),
+                        text = if (!tunerState.signalDetected) "NO SIGNAL" else if (tunerState.isInTune) "IN TUNE ✓" else String.format("%+.0f CENTS", tunerState.centsOffset),
                         style = MaterialTheme.typography.labelMedium,
                         color = inTuneColor,
                         fontWeight = FontWeight.ExtraBold,
@@ -177,7 +178,7 @@ fun TunerScreen(
         // Guitar String Selector Bar
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                text = "TAP STRING TO SIMULATE PLUCK",
+                text = "TAP A STRING TO LOCK ON TO IT",
                 style = MaterialTheme.typography.labelSmall,
                 color = AmpTextSecondary,
                 fontWeight = FontWeight.Bold
