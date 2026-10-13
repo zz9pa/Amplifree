@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
@@ -509,20 +510,28 @@ private fun JumpChips(chips: List<JumpChip>, onChip: (String) -> Unit, modifier:
     ) {
         items(chips, key = { it.cardKey }) { chip ->
             val description = stringResource(R.string.editor_jump_to, chip.label)
-            // The chip itself is 32dp; the wrapper brings the touch target up to 48dp.
-            Box(Modifier.minimumInteractiveComponentSize()) {
-                AssistChip(
-                    onClick = { onChip(chip.cardKey) },
-                    label = { Text(chip.label, fontWeight = FontWeight.Bold) },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = AmpSurface,
-                        labelColor = AmpGold
-                    ),
-                    border = AssistChipDefaults.assistChipBorder(enabled = true, borderColor = AmpSurfaceVariant),
-                    modifier = Modifier
-                        .semantics { contentDescription = description }
-                        .testTag("jump_${chip.cardKey}")
-                )
+            // The visible pill is about 32dp high; the clickable box around it is 48dp.
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .heightIn(min = MinTouchTarget)
+                    .clickable(role = Role.Button) { onChip(chip.cardKey) }
+                    .semantics { contentDescription = description }
+                    .testTag("jump_${chip.cardKey}")
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = AmpSurface,
+                    border = BorderStroke(1.dp, AmpSurfaceVariant)
+                ) {
+                    Text(
+                        chip.label,
+                        color = AmpGold,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
             }
         }
     }
@@ -791,14 +800,10 @@ private fun ParamSlider(
     }
     val unit = range.start >= 0f && range.endInclusive <= 1f
     val shown = if (unit) "%.2f".format(value) else "%.1f".format(value)
-    Column(
-        Modifier
-            .padding(vertical = 2.dp)
-            // Label, value and slider are one control for TalkBack.
-            .semantics(mergeDescendants = true) { stateDescription = shown }
-    ) {
+    Column(Modifier.padding(vertical = 2.dp)) {
+        // The slider below says its own name and value to TalkBack, so this line is visual only.
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().clearAndSetSemantics {},
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(label, color = AmpTextPrimary, style = MaterialTheme.typography.bodyMedium,
@@ -816,7 +821,12 @@ private fun ParamSlider(
                 activeTrackColor = AmpOrangeGlow,
                 inactiveTrackColor = AmpSurfaceVariant
             ),
-            modifier = Modifier.testTag("param_$label")
+            modifier = Modifier
+                .semantics {
+                    contentDescription = label
+                    stateDescription = shown
+                }
+                .testTag("param_$label")
         )
     }
 }
@@ -839,7 +849,9 @@ private fun SwitchRow(
             .toggleable(value = checked, enabled = enabled, role = Role.Switch) {
                 haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onCheckedChange(it)
-            },
+            }
+            // The tag sits on the toggle itself (the row), not on the switch inside it.
+            .testTag(tag),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -855,8 +867,7 @@ private fun SwitchRow(
             checked = checked,
             onCheckedChange = null,
             enabled = enabled,
-            colors = SwitchDefaults.colors(checkedThumbColor = AmpGold, checkedTrackColor = AmpSurfaceVariant),
-            modifier = Modifier.testTag(tag)
+            colors = SwitchDefaults.colors(checkedThumbColor = AmpGold, checkedTrackColor = AmpSurfaceVariant)
         )
     }
 }
