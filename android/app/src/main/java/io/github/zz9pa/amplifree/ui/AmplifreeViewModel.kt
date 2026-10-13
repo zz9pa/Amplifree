@@ -2,6 +2,7 @@ package io.github.zz9pa.amplifree.ui
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import io.github.zz9pa.amplifree.data.HardwareDevice
 import io.github.zz9pa.amplifree.data.HardwareManager
@@ -25,11 +26,22 @@ data class AmplifreeUiState(
     }
 }
 
-class AmplifreeViewModel(application: Application) : AndroidViewModel(application) {
+class AmplifreeViewModel(
+    application: Application,
+    private val saved: SavedStateHandle
+) : AndroidViewModel(application) {
     val hardwareManager = HardwareManager(application.applicationContext)
     val tunerEngine = TunerEngine()
 
-    private val _uiState = MutableStateFlow(AmplifreeUiState())
+    // The selected tab and the connection dialog are kept in the saved state, so they also
+    // come back if Android recreates the process, not just on rotation.
+    private val _uiState = MutableStateFlow(
+        AmplifreeUiState(
+            activeTab = saved.get<Int>(KEY_TAB)?.takeIf { it in AmplifreeUiState.TAB_EDITOR..AmplifreeUiState.TAB_TUNER }
+                ?: AmplifreeUiState.TAB_EDITOR,
+            isConnectionDialogVisible = saved.get<Boolean>(KEY_DIALOG) ?: false
+        )
+    )
     val uiState: StateFlow<AmplifreeUiState> = _uiState.asStateFlow()
 
     val hardwareState = hardwareManager.state
@@ -37,13 +49,20 @@ class AmplifreeViewModel(application: Application) : AndroidViewModel(applicatio
 
     private var tunerJob: Job? = null
 
+    init {
+        // Restored on the tuner tab: start the tuner exactly as selecting the tab would.
+        if (_uiState.value.activeTab == AmplifreeUiState.TAB_TUNER) onTunerVisible(true)
+    }
+
     fun selectTab(tabIndex: Int) {
         _uiState.update { it.copy(activeTab = tabIndex) }
+        saved[KEY_TAB] = tabIndex
         onTunerVisible(tabIndex == AmplifreeUiState.TAB_TUNER)
     }
 
     fun toggleConnectionDialog(show: Boolean) {
         _uiState.update { it.copy(isConnectionDialogVisible = show) }
+        saved[KEY_DIALOG] = show
     }
 
     fun connectToHardwareDevice(device: HardwareDevice) = hardwareManager.connectDevice(device)
@@ -64,6 +83,11 @@ class AmplifreeViewModel(application: Application) : AndroidViewModel(applicatio
                 hardwareManager.tunerNote.collect { tunerEngine.publishNote(it) }
             }
         }
+    }
+
+    private companion object {
+        const val KEY_TAB = "activeTab"
+        const val KEY_DIALOG = "connectionDialog"
     }
 
     override fun onCleared() {
