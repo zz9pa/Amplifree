@@ -103,9 +103,14 @@ fun TunerScreen(
         } else {
             // Scrolls when the font is large or the phone is short, instead of clipping.
             Column(
-                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp)
+                    // At least a full screen high, so the parts spread out instead of huddling at the top.
+                    .heightIn(min = maxHeight - 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(20.dp)
+                verticalArrangement = Arrangement.SpaceEvenly
             ) {
                 TunerTitle()
                 TunerGauge(tunerState, animatedCents, inTuneColor, gaugeSize)
@@ -215,12 +220,13 @@ private fun TunerGauge(tunerState: TunerState, animatedCents: Float, inTuneColor
             )
         }
 
-        // Central Note & Hz Display. The big note name stops growing at 130% font scale so it
-        // stays inside the dial; the smaller texts keep scaling with the system setting.
+        // Central Note & Hz Display, below the needle's pivot so the needle never crosses the note.
+        // The big note name stops growing at 130% font scale so it stays inside the dial; the
+        // smaller texts keep scaling with the system setting.
         val density = LocalDensity.current
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(top = 40.dp)
+            modifier = Modifier.padding(top = size * 0.5f)
         ) {
             CompositionLocalProvider(
                 LocalDensity provides Density(density.density, density.fontScale.coerceAtMost(1.3f))
