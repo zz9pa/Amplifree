@@ -1,3 +1,30 @@
 <resources>
     <string name="app_name">Amplifree</string>
+
+    <!-- Connection / link state -->
+    <string name="action_connect">Connect to amp</string>
+    <string name="action_open_bluetooth_settings">Open Bluetooth settings</string>
+    <string name="link_disconnected_title">Amp not connected</string>
+    <string name="link_needs_link_title">Waiting for Bluetooth</string>
+    <string name="link_connecting_title">Connecting to your amp…</string>
+
+    <!-- Friendly versions of the connection status messages -->
+    <string name="status_not_connected">Not connected to your amp.</string>
+    <string name="status_connected">Connected and ready.</string>
+    <string name="status_getting_ready">Getting your amp ready…</string>
+    <string name="status_reconnecting">Lost the connection to your amp. Reconnecting…</string>
+    <string name="status_learning_models">Learning your amp\'s models (%1$d of %2$d)…</string>
+
+    <!-- Navigation -->
+    <string name="tab_editor">Editor</string>
+    <string name="tab_tones">Tones</string>
+    <string name="tab_tuner">Tuner</string>
+
+    <!-- Top header -->
+    <string name="header_connected_fallback">Connected</string>
+    <string name="header_connecting">Connecting…</string>
+    <string name="header_tap_to_connect">Tap to connect</string>
+    <string name="header_connection_description">Amp connection: %1$s</string>
+    <string name="header_connection_action">Manage amp connection</string>
+    <string name="header_tone_description">Current tone: %1$s</string>
 </resources>
