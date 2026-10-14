@@ -42,8 +42,11 @@ object Bsp {
         var off = 0
         while (off + 8 <= payload.size) {
             val h = AmplifiProtocol.unpackBspHeader(payload.copyOfRange(off, off + 8)) ?: break
-            var total = h.dst + 8
-            if (total < 8 || off + total > payload.size) total = payload.size - off // malformed tail
+            val total = h.dst + 8
+            // A frame that claims more bytes than the payload holds (or fewer than a header) is a
+            // protocol violation after a CRC-valid RSMC payload. Feeding the short remainder to the
+            // byte stream would corrupt it, so stop and drop it.
+            if (total < 8 || off + total > payload.size) break
             out.add(payload.copyOfRange(off, off + total))     // without the padding
             off += (total + 3) and 3.inv()
         }
@@ -100,6 +103,8 @@ class ServiceStream(val aux: Int) {
         const val DEFAULT_MTU = 228
         const val FRAME_OVERHEAD = 16
         const val AMP_INITIAL_EDGE = 512
+        /** Consecutive ahead-of-order segments after which a stream is considered broken. */
+        const val GAP_LIMIT = 3
 
         const val FLAG_SYN = 0x01
         const val FLAG_DATA = 0x04
@@ -131,6 +136,15 @@ class ServiceStream(val aux: Int) {
         private set
     private var lastRxCtr: Int = -1
     private var lastAdvertised: Int = -1
+    private var gapRun = 0
+
+    /**
+     * True once several segments in a row arrived *ahead* of the one we expected: a segment was
+     * lost and every later one is being refused, so this stream will never recover by itself.
+     * The owner should reopen it.
+     */
+    var broken: Boolean = false
+        private set
 
     /** Window we advertise: capacity + everything we have consumed. */
     fun window(): Int = (RX_CAPACITY + rxConsumed).toInt()
@@ -150,6 +164,8 @@ class ServiceStream(val aux: Int) {
         txSent = 0
         rxConsumed = 0
         lastRxCtr = -1
+        gapRun = 0
+        broken = false
         lastAdvertised = RX_CAPACITY
         val header = AmplifiProtocol.packBspHeader(type = 2, dst = 12, aux = aux, src = src)
         val body = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
@@ -169,18 +185,35 @@ class ServiceStream(val aux: Int) {
         val seg = Segment.parse(frame) ?: return Inbound(ByteArray(0), false)
         if (seg.type == 2) {
             peerMtu = if (seg.mtu in 64..1024) seg.mtu else DEFAULT_MTU
-            peerEdge = maxOf(peerEdge, seg.window.toLong())
+            growEdge(seg.window)
             lastRxCtr = seg.ctr
+            gapRun = 0
             return Inbound(ByteArray(0), true)
         }
         // The window only ever grows; never let a stale segment shrink it.
-        if (seg.window.toLong() > peerEdge) peerEdge = seg.window.toLong()
+        growEdge(seg.window)
 
         val inOrder = lastRxCtr < 0 || seg.ctr == ((lastRxCtr + 1) and 0xFF)
-        if (!inOrder) return Inbound(ByteArray(0), false)
+        if (!inOrder) {
+            // A repeat of one we already have is harmless; one that skips ahead is a lost segment.
+            val ahead = (seg.ctr - lastRxCtr) and 0xFF
+            if (ahead in 2..127 && ++gapRun >= GAP_LIMIT) broken = true
+            return Inbound(ByteArray(0), false)
+        }
+        gapRun = 0
         lastRxCtr = seg.ctr
         rxConsumed += seg.payload.size
         return Inbound(seg.payload, false)
+    }
+
+    /**
+     * The window word is an unsigned 32-bit stream offset that eventually wraps; compare it modulo
+     * 2^32 so the edge keeps growing instead of getting stuck once it passes 2^31.
+     */
+    private fun growEdge(window: Int) {
+        val w = window.toLong() and 0xFFFFFFFFL
+        val delta = (w - (peerEdge and 0xFFFFFFFFL)) and 0xFFFFFFFFL
+        if (delta in 1..0x7FFFFFFFL) peerEdge += delta
     }
 
     /** True when our advertised window is stale and the amp should be told. */
@@ -241,12 +274,26 @@ class Record(val type: Int, val data: ByteArray) {
 
 /** Reassembles inbound stream bytes into [Record]s. */
 class RecordParser {
+    companion object {
+        /** Largest record accepted: comfortably above the biggest symbol table we allow (500 000 bytes). */
+        const val MAX_RECORD = 600_000
+    }
+
     private var buf = ByteArray(0)
+
+    /**
+     * Set when a header made no sense. The byte stream has no marker to resynchronise on, so the
+     * rest of that record would be read as new headers; stop parsing and let the owner reopen the
+     * stream instead of inventing records.
+     */
+    var broken: Boolean = false
+        private set
 
     /** Number of leading bytes still to discard (the Librarian's 4-byte hello). */
     @Volatile var skip: Int = 0
 
     fun feed(bytes: ByteArray): List<Record> {
+        if (broken) return emptyList()
         var data = bytes
         if (skip > 0) {
             val n = minOf(skip, data.size)
@@ -259,7 +306,7 @@ class RecordParser {
             val bb = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN)
             val type = bb.int
             val len = bb.int
-            if (len < 0 || len > 65536) { buf = ByteArray(0); break } // desync: drop, resync on next reply
+            if (len < 0 || len > MAX_RECORD) { buf = ByteArray(0); broken = true; break }
             if (buf.size < 8 + len) break
             out.add(Record(type, buf.copyOfRange(8, 8 + len)))
             buf = buf.copyOfRange(8 + len, buf.size)
@@ -267,5 +314,5 @@ class RecordParser {
         return out
     }
 
-    fun reset() { buf = ByteArray(0); skip = 0 }
+    fun reset() { buf = ByteArray(0); skip = 0; broken = false }
 }

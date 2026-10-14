@@ -137,4 +137,30 @@ class PresetCodecTest {
             assertNotNull("${b.symbol}.${param.name} -> $editorName", table.id(editorName))
         }
     }
+
+    @Test
+    fun anUnknownRecordTypeKeepsTheBodyByteExact() {
+        val table = TestSupport.symbolTable()
+        val body = TestSupport.preset() + byteArrayOf(9, 0, 0, 0, 0x63, 0x00, 1, 2, 3, 4)   // type 0x63 is unknown
+        val p = PresetCodec.decode(body, table.names)
+        assertFalse(p.isComplete)
+        assertArrayEquals(body, p.encode())
+    }
+
+    @Test
+    fun aTruncatedRecordKeepsTheBodyByteExact() {
+        val table = TestSupport.symbolTable()
+        val body = TestSupport.preset() + byteArrayOf(9, 0, 0, 0, PresetCodec.TYPE_FLOAT.toByte(), 0, 1, 2)
+        val p = PresetCodec.decode(body, table.names)
+        assertFalse(p.isComplete)
+        assertArrayEquals(body, p.encode())
+    }
+
+    @Test
+    fun aMalformedShortBlockRecordDoesNotMakeBlocksThrow() {
+        val short = PresetCodec.Record(PresetCodec.KEY_BLOCK, PresetCodec.TYPE_STRING, byteArrayOf(1, 2))
+        val sec = PresetCodec.Record(PresetCodec.KEY_SECTION, PresetCodec.TYPE_INT, byteArrayOf(1, 0, 0, 0))
+        val p = PresetCodec.Preset(mutableListOf(sec, short), ByteArray(0), listOf("A"))
+        assertEquals(1, p.blocks().size)       // does not throw
+    }
 }

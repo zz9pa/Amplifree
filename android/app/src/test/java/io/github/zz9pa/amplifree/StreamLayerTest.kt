@@ -70,10 +70,13 @@ class StreamLayerTest {
     }
 
     @Test
-    fun aMalformedTailIsKeptRatherThanDropped() {
+    fun aTruncatedTailFrameIsDroppedNotDeliveredShort() {
         val a = ampFrame(lib, 2, 0x04, 600, ByteArray(4))
         val truncated = a.copyOf(a.size - 2)
-        assertEquals(1, Bsp.splitFrames(truncated).size)
+        assertEquals(0, Bsp.splitFrames(truncated).size)
+        // a complete frame before the truncated one is still delivered
+        val good = ampFrame(lib, 3, 0x08, 600, ByteArray(0))
+        assertEquals(1, Bsp.splitFrames(good + truncated).size)
     }
 
     @Test
@@ -377,11 +380,77 @@ class StreamLayerTest {
     }
 
     @Test
-    fun anImplausibleLengthResyncsInsteadOfBuffering64KbOfGarbage() {
+    fun anImplausibleLengthMarksTheParserBrokenInsteadOfInventingRecords() {
         val p = RecordParser()
         assertEquals(0, p.feed(TestSupport.hex("01000000" + "ffffff7f")).size)
+        assertTrue(p.broken)
+        // the rest of that record must not be read as new headers
+        assertEquals(0, p.feed(ByteArray(300)).size)
+        p.reset()
         val good = p.feed(TestSupport.hex("01000000" + "04000000" + "07000000"))
         assertEquals(1, good.size)
         assertEquals(7, good[0].result)
+    }
+
+    @Test
+    fun aLargeRecordArrivingInSegmentsIsOneRecord() {
+        val p = RecordParser()
+        val body = ByteArray(70_000) { (it % 251).toByte() }
+        val bb = ByteBuffer.allocate(8 + body.size).order(ByteOrder.LITTLE_ENDIAN)
+        bb.putInt(1).putInt(body.size).put(body)
+        val bytes = bb.array()
+        var records = 0
+        var off = 0
+        while (off < bytes.size) {
+            val n = minOf(212, bytes.size - off)
+            records += p.feed(bytes.copyOfRange(off, off + n)).size
+            off += n
+        }
+        assertEquals(1, records)
+        assertFalse(p.broken)
+    }
+
+    @Test
+    fun aSkippedSegmentIsDetectedAndTheStreamFlaggedBroken() {
+        val st = ServiceStream(lib)
+        st.connectSegment()
+        assertEquals(10, st.onFrame(ampFrame(lib, 2, 0x04, 600, ByteArray(10))).newBytes.size)
+        assertFalse(st.broken)
+        for (ctr in 4..6) assertEquals(0, st.onFrame(ampFrame(lib, ctr, 0x04, 600, ByteArray(10))).newBytes.size)
+        assertTrue(st.broken)
+    }
+
+    @Test
+    fun aRepeatedSegmentIsNotAGap() {
+        val st = ServiceStream(lib)
+        st.connectSegment()
+        st.onFrame(ampFrame(lib, 2, 0x04, 600, ByteArray(10)))
+        repeat(5) { assertEquals(0, st.onFrame(ampFrame(lib, 2, 0x04, 600, ByteArray(10))).newBytes.size) }
+        assertFalse(st.broken)
+    }
+
+    @Test
+    fun theAmpsWindowKeepsGrowingPastTwoToTheThirtyOne() {
+        val st = ServiceStream(lib)
+        st.connectSegment()
+        st.onFrame(ampFrame(lib, 2, 0x08, 0x7FFFFF00, ByteArray(0)))
+        assertEquals(0x7FFFFF00L, st.peerEdge)
+        st.onFrame(ampFrame(lib, 3, 0x08, 0x80000100.toInt(), ByteArray(0)))
+        assertEquals(0x80000100L, st.peerEdge)
+        // a stale, smaller window never shrinks it
+        st.onFrame(ampFrame(lib, 4, 0x08, 0x7FFFFF00, ByteArray(0)))
+        assertEquals(0x80000100L, st.peerEdge)
+    }
+
+    @Test
+    fun theCounterWrapsFrom255ToZeroWithoutALoss() {
+        val st = ServiceStream(lib)
+        st.connectSegment()
+        var ctr = 2
+        repeat(300) {
+            assertEquals(1, st.onFrame(ampFrame(lib, ctr, 0x04, 600, ByteArray(1))).newBytes.size)
+            ctr = (ctr + 1) and 0xFF
+        }
+        assertFalse(st.broken)
     }
 }

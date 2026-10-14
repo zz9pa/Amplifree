@@ -258,6 +258,9 @@ object AmplifiProtocol {
         var badFrames = 0
             private set
 
+        /** Forget any partial frame (a new connection must not inherit the old one's leftovers). */
+        fun reset() { buf.clear() }
+
         fun push(data: ByteArray, length: Int): List<RsmcFrame> {
             for (i in 0 until length) buf.addLast(data[i])
             val out = mutableListOf<RsmcFrame>()

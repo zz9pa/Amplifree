@@ -51,10 +51,11 @@ object PresetCodec {
     const val TYPE_ENUM = 7
 
     class Record(val key: Int, val type: Int, var raw: ByteArray?) {
+        // A malformed record may carry fewer than four bytes; read it as zero instead of throwing.
         val asInt: Int
-            get() = raw?.let { ByteBuffer.wrap(it).order(ByteOrder.LITTLE_ENDIAN).int } ?: 0
+            get() = raw?.takeIf { it.size >= 4 }?.let { ByteBuffer.wrap(it).order(ByteOrder.LITTLE_ENDIAN).int } ?: 0
         val asFloat: Float
-            get() = raw?.let { ByteBuffer.wrap(it).order(ByteOrder.LITTLE_ENDIAN).float } ?: 0f
+            get() = raw?.takeIf { it.size >= 4 }?.let { ByteBuffer.wrap(it).order(ByteOrder.LITTLE_ENDIAN).float } ?: 0f
         val asString: String
             get() = raw?.toString(Charsets.US_ASCII)?.trimEnd('\u0000') ?: ""
 
@@ -139,6 +140,9 @@ object PresetCodec {
             blocks().firstOrNull { it.symbol == blockSymbol }
                 ?.params?.firstOrNull { it.name == paramName }
 
+        /** True if the whole body was understood; false means [tail] holds bytes we could not parse. */
+        val isComplete: Boolean get() = tail.isEmpty()
+
         fun encode(): ByteArray {
             val size = records.sumOf { it.encodedSize() } + tail.size
             val bb = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
@@ -153,6 +157,7 @@ object PresetCodec {
         var i = 0
         val n = body.size
         while (i + 6 <= n) {
+            val start = i
             val bb = ByteBuffer.wrap(body, i, n - i).order(ByteOrder.LITTLE_ENDIAN)
             val key = bb.int
             val type = bb.short.toInt() and 0xFFFF
@@ -160,17 +165,19 @@ object PresetCodec {
             val raw: ByteArray? = when (type) {
                 TYPE_NONE -> null
                 TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_ENUM -> {
-                    if (i + 4 > n) break
+                    if (i + 4 > n) { i = start; break }
                     body.copyOfRange(i, i + 4).also { i += 4 }
                 }
                 TYPE_STRING -> {
-                    if (i + 4 > n) break
+                    if (i + 4 > n) { i = start; break }
                     val len = ByteBuffer.wrap(body, i, 4).order(ByteOrder.LITTLE_ENDIAN).int
                     i += 4
-                    if (len < 0 || i + len > n) break
+                    if (len < 0 || i + len > n) { i = start; break }
                     body.copyOfRange(i, i + len).also { i += len }
                 }
-                else -> break
+                // Unknown record type: keep it (and everything after it) in [Preset.tail] untouched,
+                // so encode(decode(x)) still reproduces the input byte for byte.
+                else -> { i = start; break }
             }
             recs.add(Record(key, type, raw))
         }
