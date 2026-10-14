@@ -16,30 +16,44 @@ well. Amplifree aims to keep it usable.
 
 ## Status
 
-**Early, experimental work in progress.** It has been developed against a single AMPLIFi 150
-and a small number of phones. Expect rough edges, and treat anything that sends commands to
-your amp as use-at-your-own-risk.
+**Early, experimental.** It has been developed and tested against a single AMPLIFi 150 and a
+Pixel phone. Expect rough edges, and treat anything that sends commands to your amp as
+use-at-your-own-risk.
 
-Goals:
+**What works today**
 
-- browse and load the presets stored on the amp, with search
-- see and edit the tone that is currently live (amp, effects, on/off switches)
-- use the amp's own tuner
+- connects to your paired amp by itself, and recovers when the link drops (app restarted,
+  Bluetooth switched off and on, the amp closing a stream)
+- browse the tones stored on the amp, with search, and load one
+- see and edit the tone that is live: the amp, cabinet, effect and wah models (with search), every
+  knob, switch and choice, the signal-path switches and FX mix levels, and the master volume
+- knob moves on the amp itself show up in the app
+- the amp's own tuner (no microphone)
 - share tones: export the live tone to a small JSON file and import one someone else made
-  (see [docs/TONE_FORMAT.md](docs/TONE_FORMAT.md)); importing changes only the live tone, never the amp's stored tones
+  (see [docs/TONE_FORMAT.md](docs/TONE_FORMAT.md)); importing changes only the live tone, never the
+  amp's stored tones, and asks first if you have unsaved changes
+
+**Not there yet**
+
+- saving a tone to a slot on the amp is switched off until it can be done safely, so edits last until
+  you load another tone (the amp's own controls can still store one)
+- renaming tones (the amp can only rename a tone by saving it)
+- other AMPLIFi models and other phones are untested
 
 Not goals: no cloud features, and nothing that talks to Line 6's servers.
 
 ## Download
 
-Grab the latest APK from the [Releases page](https://github.com/zz9pa/Amplifree/releases/latest)
-(`Amplifree-<version>.apk`, with a `SHA256SUMS` file to check it against).
+Grab the latest APK from the [Releases page](https://github.com/zz9pa/Amplifree/releases)
+(`Amplifree-<version>.apk`, with a `SHA256SUMS` file to check it against). Releases are marked
+pre-release while the software is this young.
 
 1. Pair your amp in Android's Bluetooth settings and make sure it shows **Connected**.
 2. Open the downloaded APK and allow your browser or file manager to install apps when asked.
 3. Open Amplifree, allow the "Nearby devices" permission, and it connects to your amp by itself.
 
 It needs Android 7.0 or newer and asks for Bluetooth only: no internet, no microphone, no location.
+Updates install over the top of earlier versions.
 
 ## How it works
 
@@ -76,6 +90,7 @@ device that is paired but not connected.
 |---|---|
 | `android/` | The Android app (Kotlin, Jetpack Compose) |
 | `tools/` | Small Python helpers for studying the protocol |
+| `docs/` | The tone file format, and an independent review of the Bluetooth code |
 
 ## Licence
 
