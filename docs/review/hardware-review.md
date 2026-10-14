@@ -63,6 +63,19 @@ is marked as such. Nothing was run against an amp.
 
 Critical 0, High 6, Medium 15, Low 10 (F22-F31, several bundled), Nit 5.
 
+### Status after the fixes (2026-10-14)
+
+Fixed in `main` (unit-tested where the logic could be extracted; **not yet re-verified against a real amp**):
+F1, F2, F3, F4, F5, F6, F7, F8 (grace period and drain after a timeout), F9, F10, F12, F13, F14, F15, F16, F17,
+F18, F19, F20, F22, F24, F25, F26, F28. Partly fixed: F11 (a failed write or frames that are never acknowledged now
+replace the session; there is still no retransmit buffer), F23 (volatile fields; most `StateFlow` updates still
+read-modify-write), F29 (the debug receiver now needs the `DUMP` permission; the helpers are still in the main
+source set), F30 (per-amp caches, single scan, per-session reset; echo handling and `LinkMonitor` accuracy remain),
+F31 (`parse_snoop.py` import path only).
+
+Open: F21 (decide between disconnecting on stop and a foreground service), F27 (acknowledging heartbeats), the rest of
+F29-F31, and the Nits.
+
 ---
 
 ## High

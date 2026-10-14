@@ -91,7 +91,7 @@ class AmplifreeViewModel(
     }
 
     override fun onCleared() {
-        hardwareManager.stopAmpTuner()
+        hardwareManager.close()          // switches the amp's tuner off and closes the link
         super.onCleared()
     }
 }

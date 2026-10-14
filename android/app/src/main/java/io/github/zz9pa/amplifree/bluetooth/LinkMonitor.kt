@@ -29,6 +29,22 @@ object ReconnectPolicy {
     fun delayMs(attempt: Int): Long? = STEPS_MS.getOrNull(attempt)
 }
 
+/** What to do after one attempt to open a session; pure so it can be tested. */
+object SessionRetry {
+    enum class Outcome { ESTABLISHED, NOT_ACCEPTED, STOPPED, LINK_RESTORED }
+    enum class Action { DONE, RETRY_NOW, WAIT_AND_RETRY, GIVE_UP }
+
+    /**
+     * [triesSoFar] counts the waits already made after a refused session. A refused session is retried
+     * a limited number of times and then reported, instead of being retried for ever.
+     */
+    fun decide(outcome: Outcome, triesSoFar: Int, maxTries: Int): Action = when (outcome) {
+        Outcome.ESTABLISHED, Outcome.STOPPED -> Action.DONE
+        Outcome.LINK_RESTORED -> Action.RETRY_NOW
+        Outcome.NOT_ACCEPTED -> if (triesSoFar < maxTries) Action.WAIT_AND_RETRY else Action.GIVE_UP
+    }
+}
+
 /**
  * Tracks which devices Android currently considers connected.
  *
@@ -45,8 +61,18 @@ class LinkMonitor(private val context: Context) {
 
     private var started = false
 
+    /** Called when Bluetooth is switched back on, so a connection we still want can be resumed. */
+    @Volatile var onAdapterOn: (() -> Unit)? = null
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
+            if (i.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                when (i.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
+                    BluetoothAdapter.STATE_OFF -> _linked.value = emptySet()
+                    BluetoothAdapter.STATE_ON -> onAdapterOn?.invoke()
+                }
+                return
+            }
             val dev = deviceOf(i) ?: return
             val up = when (i.action) {
                 BluetoothDevice.ACTION_ACL_CONNECTED -> true
@@ -83,8 +109,12 @@ class LinkMonitor(private val context: Context) {
                 addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
                 addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
                 addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
             }
-            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            // These are protected system broadcasts sent by the Bluetooth app. RECEIVER_NOT_EXPORTED
+            // would, before Android 13, put the receiver behind an app-private permission the sender
+            // cannot hold, so it would never fire; the receiver only reads the intent.
+            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
             started = true
             seedFromProfiles()
         } catch (e: Exception) {

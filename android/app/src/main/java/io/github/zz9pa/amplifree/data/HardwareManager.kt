@@ -31,7 +31,13 @@ data class HardwareState(
 class HardwareManager(context: Context) {
     private val bt = AmplifiBluetoothManager(context)
 
-    init { DebugBridge.manager = bt }
+    init { if (io.github.zz9pa.amplifree.BuildConfig.DEBUG) DebugBridge.manager = bt }
+
+    /** Release the amp connection and everything behind it; call when the owner is cleared. */
+    fun close() {
+        DebugBridge.manager = null
+        bt.close()
+    }
 
     val state: StateFlow<HardwareState> = bt.hardwareState
 

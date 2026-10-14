@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager as SysBluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import io.github.zz9pa.amplifree.BuildConfig
 import io.github.zz9pa.amplifree.data.ConnectionState
@@ -55,6 +56,8 @@ class AmplifiBluetoothManager(private val context: Context) {
         /** Slot id the amp uses for device-wide settings such as master volume. */
         private const val GLOBAL_SLOT = -1
         private const val MAX_BACKUPS = 30
+        private const val LATE_REPLY_GRACE_MS = 1_000L
+        private const val MAX_REOPEN_FAILURES = 3
         private const val NAME_CACHE = "preset_names.json"
         private const val MODEL_CACHE = "models.json"
         private const val SYMBOL_CACHE_PREFIX = "symbols_"
@@ -65,8 +68,11 @@ class AmplifiBluetoothManager(private val context: Context) {
         val stream = ServiceStream(aux)
         val parser = RecordParser()
         val responses = Channel<Record>(Channel.UNLIMITED)
-        val events = Channel<Record>(Channel.UNLIMITED)
         val connected = CompletableDeferred<Unit>()
+        /** Completed once the version/handshake exchange for this stream is done: it can take commands. */
+        val handshaken = CompletableDeferred<Unit>()
+        /** A command timed out, so its late answer may still arrive and be mistaken for the next one. */
+        @Volatile var suspect = false
         /** Set when the amp has closed this stream; it answers nothing more until it is reopened. */
         @Volatile var closed = false
         /** Commands are answered strictly in order, so only one may be in flight. */
@@ -144,35 +150,43 @@ class AmplifiBluetoothManager(private val context: Context) {
 
     // ---- link state ------------------------------------------------------------
 
-    private val appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var sessionScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    /** Monotonic clock: unaffected by the wall clock being changed. */
+    private fun now(): Long = SystemClock.elapsedRealtime()
 
-    private var socket: BluetoothSocket? = null
-    private var input: InputStream? = null
-    private var output: OutputStream? = null
+    /** An uncaught exception in a coroutine fails the session, not the whole process. */
+    private val errorHandler = CoroutineExceptionHandler { _, e -> onUnexpectedError(e) }
+    private val appScope = CoroutineScope(Dispatchers.IO + SupervisorJob() + errorHandler)
+    @Volatile private var sessionScope = CoroutineScope(Dispatchers.IO + SupervisorJob() + errorHandler)
+    /** Identifies the current connection; every loop of an older one sees it change and stops. */
+    private val sessionId = java.util.concurrent.atomic.AtomicInteger(0)
+
+    @Volatile private var socket: BluetoothSocket? = null
+    @Volatile private var input: InputStream? = null
+    @Volatile private var output: OutputStream? = null
     @Volatile private var isRunning = false
     @Volatile private var stalled = false
     @Volatile private var lastRx = 0L
+    @Volatile private var lastAckProgress = 0L
 
     // RSMC: one sequence counter, advanced only by payload frames.
     private val txLock = Mutex()
-    private var txSeq = 0
-    private var rxSeq = 0
+    @Volatile private var txSeq = 0
+    @Volatile private var rxSeq = 0
     @Volatile private var peerAck = 0
     @Volatile private var synced = false
-    private var sawFrame = CompletableDeferred<Unit>()
-    private val decoder = AmplifiProtocol.RsmcDecoder()
+    @Volatile private var sawFrame = CompletableDeferred<Unit>()
+    @Volatile private var decoder = AmplifiProtocol.RsmcDecoder()
 
     // Streams. Frames are produced under [streamLock] so counters match send order.
-    private var editor: Service? = null
-    private var librarian: Service? = null
+    @Volatile private var editor: Service? = null
+    @Volatile private var librarian: Service? = null
     private val streamLock = Mutex()
-    private var outbox = Channel<ByteArray>(Channel.UNLIMITED)
+    @Volatile private var outbox = Channel<ByteArray>(Channel.UNLIMITED)
 
     private var symbols: SymbolTable? = null
     @Volatile private var tunerActive = false
-    /** (slot, param) pairs we have subscribed to, and which preset parameter each one is. */
-    private val subscribed = HashSet<Long>()
+    /** (slot, param) pairs we have successfully subscribed to this session. */
+    private val subscribed: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     @Volatile private var eventParams: Map<Long, PresetCodec.Param> = emptyMap()
     @Volatile private var tunerSlotId = -1
     @Volatile private var tunerNoteId = -1
@@ -202,19 +216,39 @@ class AmplifiBluetoothManager(private val context: Context) {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? SysBluetoothManager)?.adapter
 
     // ---- connection ----------------------------------------------------------------
+    //
+    // All connecting, reconnecting and tearing down goes through one actor, which does one thing at a
+    // time: before it starts anything it stops the previous attempt completely. That way two attempts
+    // can never own the socket and the session state at once, and a Disconnect can never lose a race
+    // with an attempt that is half-way through publishing its socket.
 
-    private val linkMonitor = LinkMonitor(context)
+    private val linkMonitor = LinkMonitor(context).also { it.onAdapterOn = { onBluetoothOn() } }
     private val prefs = context.getSharedPreferences("amplifree", Context.MODE_PRIVATE)
 
     /** True while we are waiting for the user to connect the amp in Android's Bluetooth settings. */
     private val _needsLink = MutableStateFlow(false)
     val needsLink: StateFlow<Boolean> = _needsLink.asStateFlow()
 
-    /** Bumped for every connection attempt so a stale attempt can tell it has been superseded. */
-    @Volatile private var generation = 0
-    private var connectJob: Job? = null
+    private sealed interface ConnCmd {
+        class Connect(val device: HardwareDevice, val gen: Int, val delayMs: Long) : ConnCmd
+        object Disconnect : ConnCmd
+        object Close : ConnCmd
+    }
+
+    private val connCmds = Channel<ConnCmd>(Channel.UNLIMITED)
+
+    /** Bumped for every request, so an attempt can tell it has been superseded. */
+    private val generation = java.util.concurrent.atomic.AtomicInteger(0)
+    private val reconnectQueued = java.util.concurrent.atomic.AtomicBoolean(false)
     /** False after the user taps Disconnect: no automatic reconnects until they connect again. */
     @Volatile private var wantConnected = false
+    @Volatile private var lastDevice: HardwareDevice? = null
+    /** The socket currently being opened; closing it aborts a blocking connect(). */
+    @Volatile private var pendingSocket: BluetoothSocket? = null
+    /** Unexpected exceptions in a row, so a bug cannot cause an endless reconnect loop. */
+    @Volatile private var errorStreak = 0
+
+    init { appScope.launch { connectionActor() } }
 
     /** Is the amp connected as far as Android is concerned? */
     fun isLinked(mac: String): Boolean = linkMonitor.isLinked(mac)
@@ -231,28 +265,131 @@ class AmplifiBluetoothManager(private val context: Context) {
     /** Called by the app when the user connects. */
     fun connectToDevice(device: HardwareDevice) {
         wantConnected = true
+        lastDevice = device
+        errorStreak = 0
         prefs.edit().putString("last_mac", device.macAddress).apply()
-        startAttempt(device)
+        enqueueConnect(device, 0)
     }
 
-    private fun startAttempt(device: HardwareDevice) {
-        val gen = ++generation
-        connectJob?.cancel()
-        connectJob = appScope.launch { connectLoop(device, gen) }
+    private fun enqueueConnect(device: HardwareDevice, delayMs: Long) {
+        val gen = generation.incrementAndGet()
+        abortPendingConnect()
+        connCmds.trySend(ConnCmd.Connect(device, gen, delayMs))
     }
 
-    private fun current(gen: Int) = gen == generation && wantConnected
+    private fun abortPendingConnect() {
+        try { pendingSocket?.close() } catch (_: Exception) {}
+    }
+
+    private fun current(gen: Int) = gen == generation.get() && wantConnected
+
+    private suspend fun connectionActor() {
+        var job: Job? = null
+        for (cmd in connCmds) {
+            // Stop whatever is running, completely, before starting the next thing.
+            abortPendingConnect()
+            job?.cancelAndJoin(); job = null
+            when (cmd) {
+                is ConnCmd.Connect -> {
+                    reconnectQueued.set(false)
+                    job = appScope.launch {
+                        if (cmd.delayMs > 0) delay(cmd.delayMs)
+                        if (current(cmd.gen)) connectLoop(cmd.device, cmd.gen)
+                    }
+                }
+                ConnCmd.Disconnect -> { stopTunerBeforeClosing(); teardown("Not connected") }
+                ConnCmd.Close -> { stopTunerBeforeClosing(); teardown("Not connected"); appScope.cancel(); return }
+            }
+        }
+    }
+
+    /** Leave the amp's tuner off when we go away. */
+    private suspend fun stopTunerBeforeClosing() {
+        if (tunerActive && isRunning) withTimeoutOrNull(1_500) { doStopTuner() }
+    }
+
+    /** The user asked to disconnect: stay disconnected until they connect again. */
+    fun disconnect() {
+        wantConnected = false
+        generation.incrementAndGet()
+        _needsLink.value = false
+        abortPendingConnect()
+        connCmds.trySend(ConnCmd.Disconnect)
+    }
+
+    /** Release everything; the manager cannot be used afterwards. Call when its owner is cleared. */
+    fun close() {
+        wantConnected = false
+        generation.incrementAndGet()
+        abortPendingConnect()
+        connCmds.trySend(ConnCmd.Close)
+        linkMonitor.stop()
+    }
+
+    /** The link dropped by itself (or a safety net fired): get back without bothering the user. */
+    private fun requestReconnect(reason: String) {
+        val device = lastDevice ?: return
+        if (!wantConnected) return
+        if (!reconnectQueued.compareAndSet(false, true)) return          // one is already on its way
+        Log.w(TAG, "reconnecting: $reason")
+        _status.value = "Connection lost. Reconnecting…"
+        enqueueConnect(device, 1_000)
+    }
+
+    /** Bluetooth was switched back on while we wanted to be connected. */
+    private fun onBluetoothOn() {
+        val device = lastDevice ?: return
+        if (wantConnected && _hardwareState.value.connectionState == ConnectionState.DISCONNECTED) {
+            enqueueConnect(device, 1_500)
+        }
+    }
+
+    /** Anything uncaught in a coroutine: log it and fail the session, never the whole process. */
+    private fun onUnexpectedError(e: Throwable) {
+        Log.e(TAG, "unexpected error: ${e.message}", e)
+        if (++errorStreak <= 3) requestReconnect("unexpected error") else fail("Something went wrong inside the app. Tap the amp to try again.")
+    }
+
+    private enum class ConnectOutcome { ESTABLISHED, NOT_ACCEPTED, STOPPED, LINK_RESTORED }
 
     /**
-     * Open the link, retrying quietly. A first RFCOMM attempt right after the amp powers up, or
-     * just after Android has connected it, often fails and then succeeds; giving up at the first
-     * error is a big part of why the manufacturer's app felt flaky. If it still will not open and
-     * Android does not list the amp as connected, ask the user to connect it and carry on
-     * automatically when they do.
+     * Open the link, retrying quietly. A first RFCOMM attempt right after the amp powers up, or just
+     * after Android has connected it, often fails and then succeeds; giving up at the first error is
+     * a big part of why the manufacturer's app felt flaky. If it still will not open and Android does
+     * not list the amp as connected, ask the user to connect it and carry on automatically when they
+     * do. If the amp accepts the link but not a session (it keeps a cut-off one open for a while),
+     * wait and try again a few times.
      */
+    private suspend fun connectLoop(device: HardwareDevice, gen: Int) {
+        var sessionTries = 0
+        while (current(gen)) {
+            val outcome = connectOnce(device, gen)
+            when (SessionRetry.decide(outcome.toPolicy(), sessionTries, SESSION_RETRIES)) {
+                SessionRetry.Action.DONE -> return
+                SessionRetry.Action.RETRY_NOW -> Unit
+                SessionRetry.Action.WAIT_AND_RETRY -> {
+                    sessionTries++
+                    _status.value = "Waiting for the amp to be ready…"
+                    delay(SESSION_RETRY_WAIT_MS)
+                }
+                SessionRetry.Action.GIVE_UP -> {
+                    fail("The amp didn't accept the connection. Power-cycle it and retry.")
+                    return
+                }
+            }
+        }
+    }
+
+    private fun ConnectOutcome.toPolicy() = when (this) {
+        ConnectOutcome.ESTABLISHED -> SessionRetry.Outcome.ESTABLISHED
+        ConnectOutcome.NOT_ACCEPTED -> SessionRetry.Outcome.NOT_ACCEPTED
+        ConnectOutcome.STOPPED -> SessionRetry.Outcome.STOPPED
+        ConnectOutcome.LINK_RESTORED -> SessionRetry.Outcome.LINK_RESTORED
+    }
+
     @SuppressLint("MissingPermission")
-    private suspend fun connectLoop(device: HardwareDevice, gen: Int, attempt: Int = 0) {
-        teardown()
+    private suspend fun connectOnce(device: HardwareDevice, gen: Int): ConnectOutcome {
+        teardown("Connecting to ${device.name}…")
         _needsLink.value = false
         _hardwareState.value = _hardwareState.value.copy(
             connectionState = ConnectionState.SCANNING, connectedDevice = device
@@ -260,47 +397,64 @@ class AmplifiBluetoothManager(private val context: Context) {
         linkMonitor.start()
 
         val adapter = systemAdapter()
-        if (adapter == null || !adapter.isEnabled) { fail("Bluetooth is off. Turn it on and tap the amp again."); return }
+        if (adapter == null || !adapter.isEnabled) {
+            fail("Bluetooth is off. Turn it on and Amplifree will reconnect."); return ConnectOutcome.STOPPED
+        }
 
-        var attempt = 0
+        var tries = 0
         var opened: BluetoothSocket? = null
         while (current(gen) && opened == null) {
-            _status.value = if (attempt == 0) "Connecting to ${device.name}…"
-                            else "Connecting to ${device.name}… (try ${attempt + 1})"
+            _status.value = if (tries == 0) "Connecting to ${device.name}…"
+                            else "Connecting to ${device.name}… (try ${tries + 1})"
+            var sock: BluetoothSocket? = null
             try {
-                val dev = adapter.getRemoteDevice(device.macAddress)
-                opened = dev.createInsecureRfcommSocketToServiceRecord(SPP_UUID).also { it.connect() }
+                sock = adapter.getRemoteDevice(device.macAddress).createInsecureRfcommSocketToServiceRecord(SPP_UUID)
+                pendingSocket = sock
+                sock.connect()
+                opened = sock
             } catch (e: SecurityException) {
+                closeQuietly(sock)
+                if (!current(gen)) return ConnectOutcome.STOPPED
                 // Retrying cannot fix a missing permission, so say so instead of "can't reach".
                 Log.w(TAG, "Bluetooth permission problem: ${e.message}")
                 fail("Amplifree needs the Nearby devices permission. Allow it in the app's settings.")
-                return
+                return ConnectOutcome.STOPPED
             } catch (e: Exception) {
-                Log.w(TAG, "RFCOMM connect failed (try ${attempt + 1}): ${e.message}")
-                val wait = ReconnectPolicy.delayMs(attempt)
-                attempt++
-                // Not connected in Android and a quiet retry did not help: stop hammering,
-                // ask the user, and resume on their connect event.
-                if (attempt >= 2 && !linkMonitor.isLinked(device.macAddress)) {
-                    awaitUserLink(device, gen); return
+                closeQuietly(sock)             // never leak the half-open socket
+                if (!current(gen)) return ConnectOutcome.STOPPED   // we were told to stop: connect() was aborted
+                Log.w(TAG, "RFCOMM connect failed (try ${tries + 1}): ${e.message}")
+                val wait = ReconnectPolicy.delayMs(tries)
+                tries++
+                // Not connected in Android and a quiet retry did not help: stop hammering, ask
+                // the user, and resume on their connect event.
+                if (tries >= 2 && !linkMonitor.isLinked(device.macAddress)) {
+                    return if (awaitUserLink(device, gen)) ConnectOutcome.LINK_RESTORED else ConnectOutcome.STOPPED
                 }
-                if (wait == null || attempt >= ReconnectPolicy.MAX_ATTEMPTS) {
+                if (wait == null || tries >= ReconnectPolicy.MAX_ATTEMPTS) {
                     fail("Can't reach the amp. Check it is switched on and in range, then tap it again.")
-                    return
+                    return ConnectOutcome.STOPPED
                 }
                 delay(wait)
+            } finally {
+                pendingSocket = null
             }
         }
-        val s = opened ?: return
-        if (!current(gen)) { try { s.close() } catch (_: Exception) {}; return }
+        val s = opened ?: return ConnectOutcome.STOPPED
+        if (!current(gen)) { closeQuietly(s); return ConnectOutcome.STOPPED }
 
-        sessionScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        // Everything that belongs to one connection is created fresh here, and the old session's
+        // loops are retired by the new session id, so nothing leaks from one session into the next.
+        val sid = sessionId.incrementAndGet()
+        sessionScope = CoroutineScope(Dispatchers.IO + SupervisorJob() + errorHandler)
         tunerOps = Channel(Channel.UNLIMITED)
-        subscribed.clear(); eventParams = emptyMap()
         sessionScope.launch { for (on in tunerOps) { if (on) doStartTuner() else doStopTuner() } }
+        subscribed.clear(); eventParams = emptyMap(); badSlots.clear()
+        recovering = false; reopenFailures = 0
+        decoder = AmplifiProtocol.RsmcDecoder()
         socket = s; input = s.inputStream; output = s.outputStream
         isRunning = true; stalled = false; synced = false
         txSeq = 0; rxSeq = 0; peerAck = 0
+        lastRx = now(); lastAckProgress = now()
         outbox = Channel(Channel.UNLIMITED)
         editor = null; librarian = null
 
@@ -308,31 +462,32 @@ class AmplifiBluetoothManager(private val context: Context) {
             connectionState = ConnectionState.CONNECTED,
             connectedDevice = device, bluetoothAudioConnected = true
         )
-        sessionScope.launch { readLoop() }
+        val inp = s.inputStream; val dec = decoder
+        sessionScope.launch { readLoop(sid, inp, dec) }
 
         // A previous session that ended badly (app killed mid-transfer) can leave the amp
         // half-way through a conversation. End it explicitly before starting ours.
         sendRaw(AmplifiProtocol.IAP_STOP); delay(500)
         sendRaw(AmplifiProtocol.IAP_OK); delay(300)
         sendRaw(AmplifiProtocol.IAP_START); delay(600)
-        if (!syncToPeer()) return
+        if (!syncToPeer()) return ConnectOutcome.STOPPED
         sessionScope.launch { for (p in outbox) { if (isRunning) sendPayload(p) } }
-        sessionScope.launch { keepAlive() }
+        sessionScope.launch { keepAlive(sid) }
 
-        val outcome = startSession(device)
-        if (outcome == SessionStart.NOT_ACCEPTED && attempt < SESSION_RETRIES && current(gen)) {
-            // The amp keeps a session that was cut off (app killed) open for a while and ignores a
-            // new one until it times out. Give it time and try again.
-            _status.value = "Waiting for the amp to be ready…"
-            delay(SESSION_RETRY_WAIT_MS)
-            if (current(gen)) connectLoop(device, gen, attempt + 1)
-            return
+        return when (startSession(device)) {
+            SessionStart.OK -> { errorStreak = 0; ConnectOutcome.ESTABLISHED }
+            SessionStart.NOT_ACCEPTED -> ConnectOutcome.NOT_ACCEPTED
+            SessionStart.FAILED -> ConnectOutcome.STOPPED
         }
-        if (outcome == SessionStart.NOT_ACCEPTED) fail("The amp didn't accept the connection. Power-cycle it and retry.")
     }
 
-    /** The amp is paired but Android has not connected it: prompt, then wait for the connection. */
-    private suspend fun awaitUserLink(device: HardwareDevice, gen: Int) {
+    private fun closeQuietly(s: BluetoothSocket?) { try { s?.close() } catch (_: Exception) {} }
+
+    /**
+     * The amp is paired but Android has not connected it: prompt, then wait for the connection.
+     * Returns true when it connected (and the caller should try again).
+     */
+    private suspend fun awaitUserLink(device: HardwareDevice, gen: Int): Boolean {
         _needsLink.value = true
         _status.value = "Connect ${device.name} in Bluetooth settings (tap it until it shows " +
                         "Connected). Amplifree carries on by itself."
@@ -340,53 +495,40 @@ class AmplifiBluetoothManager(private val context: Context) {
             connectionState = ConnectionState.DISCONNECTED, bluetoothAudioConnected = false
         )
         // Wait up to ten minutes, e.g. while the user switches the amp on or visits settings.
-        if (linkMonitor.awaitLinked(device.macAddress, 10 * 60_000L) && current(gen)) {
-            delay(1_500)                       // let the amp finish bringing its services up
-            if (current(gen)) { _needsLink.value = false; startAttempt(device) }
+        val linked = linkMonitor.awaitLinked(device.macAddress, 10 * 60_000L)
+        if (!current(gen)) return false
+        if (!linked) {
+            _needsLink.value = false
+            _status.value = "Gave up waiting for the amp. Tap it to try again."
+            return false
         }
+        delay(1_500)                       // let the amp finish bringing its services up
+        _needsLink.value = false
+        return current(gen)
     }
 
-    /** The link dropped by itself: try to get back without bothering the user. */
-    private fun scheduleReconnect() {
-        val device = _hardwareState.value.connectedDevice ?: return
-        if (!wantConnected) return
-        val gen = ++generation
-        connectJob?.cancel()
-        connectJob = appScope.launch {
-            _status.value = "Connection lost. Reconnecting…"
-            delay(1_000)
-            if (current(gen)) connectLoop(device, gen)
-        }
-    }
-
+    /** Give up for now: show [msg], release the link, and leave the app in a clean disconnected state. */
     private fun fail(msg: String) {
         Log.w(TAG, msg)
-        _status.value = msg
-        _ready.value = false
-        _hardwareState.value = _hardwareState.value.copy(
-            connectionState = ConnectionState.DISCONNECTED, bluetoothAudioConnected = false
-        )
+        teardown(msg)
     }
 
-    /** The user asked to disconnect: stay disconnected until they connect again. */
-    fun disconnect() {
-        wantConnected = false
-        generation++
-        connectJob?.cancel()
-        _needsLink.value = false
-        teardown()
-    }
-
-    private fun teardown() {
+    /**
+     * Close everything that belongs to the current session. Safe to call more than once; runs on
+     * whichever IO thread asks (never the UI thread) because it writes to and closes the socket.
+     */
+    private fun teardown(status: String) {
         val wasRunning = isRunning
         isRunning = false
+        sessionId.incrementAndGet()              // retires every loop of the old session
         _ready.value = false
         tunerActive = false
-        try { if (wasRunning) { output?.write(AmplifiProtocol.IAP_STOP); output?.flush() } } catch (_: Exception) {}
+        val out = output
+        try { if (wasRunning) { out?.write(AmplifiProtocol.IAP_STOP); out?.flush() } } catch (_: Exception) {}
         sessionScope.cancel()
         outbox.close()
         try { input?.close() } catch (_: Exception) {}
-        try { output?.close() } catch (_: Exception) {}
+        try { out?.close() } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}
         input = null; output = null; socket = null
         editor = null; librarian = null
@@ -401,7 +543,7 @@ class AmplifiBluetoothManager(private val context: Context) {
             connectionState = ConnectionState.DISCONNECTED,
             connectedDevice = null, bluetoothAudioConnected = false
         )
-        _status.value = "Not connected"
+        _status.value = status
     }
 
     // ---- RSMC link ---------------------------------------------------------------------
@@ -412,9 +554,9 @@ class AmplifiBluetoothManager(private val context: Context) {
      * a frame from us, so we probe rather than wait.
      */
     private suspend fun syncToPeer(timeoutMs: Long = 4000): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val deadline = now() + timeoutMs
         var heard = false
-        while (System.currentTimeMillis() < deadline) {
+        while (now() < deadline) {
             sawFrame = CompletableDeferred()
             sendHeartbeat()
             if (withTimeoutOrNull(400) { sawFrame.await() } != null) { heard = true; break }
@@ -430,38 +572,53 @@ class AmplifiBluetoothManager(private val context: Context) {
     }
 
     /**
-     * The amp only speaks when spoken to: its idle heartbeats are replies to ours, so a single
-     * lost frame ends the exchange and the link goes quiet while looking connected. Probe it
-     * when it falls silent, and treat a long silence as a dead link.
+     * The amp only speaks when spoken to: its idle heartbeats are replies to ours, so a single lost
+     * frame ends the exchange and the link goes quiet while looking connected. Probe it when it falls
+     * silent, and treat a long silence, or frames that are never acknowledged, as a dead link.
      */
-    private suspend fun keepAlive() {
-        lastRx = System.currentTimeMillis()
-        while (isRunning) {
+    private suspend fun keepAlive(sid: Int) {
+        lastRx = now()
+        while (sessionId.get() == sid && isRunning) {
             delay(1_000)
+            if (sessionId.get() != sid) return
             sendStreamHeartbeats()
             checkStreams()
-            val quiet = System.currentTimeMillis() - lastRx
+            val quiet = now() - lastRx
             if (quiet > KEEPALIVE_QUIET_MS) {
                 if (BuildConfig.DEBUG) Log.d(TAG, "quiet for ${quiet}ms, probing")
                 sendHeartbeat()
             }
-            if (quiet > LINK_DEAD_MS && isRunning) {
-                Log.w(TAG, "no word from the amp for ${quiet}ms")
-                scheduleReconnect()
+            val unacked = ((txSeq - peerAck) and 0xFF) > 0
+            if (quiet > LINK_DEAD_MS || (unacked && now() - lastAckProgress > LINK_DEAD_MS)) {
+                Log.w(TAG, "no progress from the amp (quiet for ${quiet}ms)")
+                requestReconnect("no word from the amp")
                 return
             }
         }
     }
 
     @Volatile private var recovering = false
+    @Volatile private var reopenFailures = 0
 
-    /** If the amp closed a stream, open it again (once at a time) instead of staying silent for good. */
+    private fun markClosed(svc: Service, why: String) {
+        if (svc.closed) return
+        Log.w(TAG, "$why: the ${if (svc.aux == AmplifiProtocol.AUX_EDITOR) "editor" else "preset"} stream will be reopened")
+        svc.closed = true
+    }
+
+    /** If a stream was closed (by the amp, or because it broke), open it again, one at a time. */
     private fun checkStreams() {
         if (recovering || !_ready.value) return
         val dead = listOfNotNull(librarian, editor).firstOrNull { it.closed } ?: return
         recovering = true
+        val sid = sessionId.get()
         sessionScope.launch {
-            try { reopenStream(dead.aux) } finally { recovering = false }
+            try {
+                if (reopenStream(dead.aux)) reopenFailures = 0
+                else if (++reopenFailures >= MAX_REOPEN_FAILURES && sessionId.get() == sid) {
+                    requestReconnect("a stream would not reopen")
+                }
+            } finally { recovering = false }
         }
     }
 
@@ -477,33 +634,40 @@ class AmplifiBluetoothManager(private val context: Context) {
         val svc = Service(aux)
         if (!isEditor) svc.parser.skip = AmplifiProtocol.LIBRARIAN_HELLO.size
         if (isEditor) editor = svc else librarian = svc
-        streamLock.withLock { outbox.trySend(svc.stream.connectSegment()) }
-        if (withTimeoutOrNull(STEP_TIMEOUT_MS) { svc.connected.await() } == null) {
-            Log.w(TAG, "the amp did not accept a new $name stream"); svc.closed = true; return false
+        var ok = false
+        try {
+            streamLock.withLock { outbox.trySend(svc.stream.connectSegment()) }
+            if (withTimeoutOrNull(STEP_TIMEOUT_MS) { svc.connected.await() } == null) {
+                Log.w(TAG, "the amp did not accept a new $name stream"); return false
+            }
+            if (!isEditor) {
+                if (!streamWrite(svc, AmplifiProtocol.LIBRARIAN_HELLO)) return false
+                withTimeoutOrNull(STEP_TIMEOUT_MS) { while (svc.parser.skip > 0) delay(20) }
+            }
+            call(svc, AmplifiProtocol.CMD_GET_VERSION) ?: run { Log.w(TAG, "$name stream: no version reply"); return false }
+            val hs = call(svc, AmplifiProtocol.CMD_HANDSHAKE, table.crcBytes())
+            if (hs == null || hs.result != 0) { Log.w(TAG, "$name stream: handshake failed"); return false }
+            svc.handshaken.complete(Unit)
+            ok = true
+        } finally {
+            if (!ok) svc.closed = true       // so it is tried again, and eventually escalated
         }
-        if (!isEditor) {
-            if (!streamWrite(svc, AmplifiProtocol.LIBRARIAN_HELLO)) return false
-            withTimeoutOrNull(STEP_TIMEOUT_MS) { while (svc.parser.skip > 0) delay(20) }
-        }
-        call(svc, AmplifiProtocol.CMD_GET_VERSION) ?: run { Log.w(TAG, "$name stream: no version reply"); return false }
-        val hs = call(svc, AmplifiProtocol.CMD_HANDSHAKE, table.crcBytes())
-        if (hs == null || hs.result != 0) { Log.w(TAG, "$name stream: handshake failed"); return false }
         Log.i(TAG, "the $name stream is back")
         if (isEditor) {
             subscribed.clear()
-            subscribeToParamEvents()
+            startSubscribe()
             readMaster()
         } else {
             // The tone list may have been cut short when the stream closed; finish it.
             val mac = connectedMac()
-            if (mac != null && _ampPresets.value.size < _slotCount.value && _scanProgress.value == null) {
+            if (mac != null && _ampPresets.value.size < _slotCount.value) {
                 sessionScope.launch { scanPresets(mac, _slotCount.value) }
             }
         }
         return true
     }
 
-    /** Debug aid: force the librarian to be reopened. */
+    /** Debug aid: force a stream to be reopened. */
     fun debugReopen(aux: Int) { sessionScope.launch { reopenStream(aux) } }
 
     /** Keep both streams alive from our side too; see [ServiceStream.heartbeatSegment]. */
@@ -514,25 +678,29 @@ class AmplifiBluetoothManager(private val context: Context) {
         }
     }
 
-    private suspend fun readLoop() = withContext(Dispatchers.IO) {
+    private suspend fun readLoop(sid: Int, inp: InputStream, dec: AmplifiProtocol.RsmcDecoder) = withContext(Dispatchers.IO) {
         val buf = ByteArray(4096)
-        while (isRunning) {
-            val n = try { input?.read(buf) ?: -1 } catch (e: Exception) {
-                if (isRunning) Log.w(TAG, "read failed: ${e.message}")
+        while (sessionId.get() == sid) {
+            val n = try { inp.read(buf) } catch (e: Exception) {
+                if (sessionId.get() == sid) Log.w(TAG, "read failed: ${e.message}")
                 -1
             }
             if (n < 0) {
-                if (isRunning) { Log.w(TAG, "link closed"); scheduleReconnect() }
+                if (sessionId.get() == sid) { Log.w(TAG, "link closed"); requestReconnect("link closed") }
                 break
             }
-            for (f in decoder.push(buf, n)) onRsmcFrame(f)
+            for (f in dec.push(buf, n)) {
+                if (sessionId.get() != sid) break
+                onRsmcFrame(f)
+            }
         }
     }
 
     private suspend fun onRsmcFrame(f: AmplifiProtocol.RsmcFrame) {
-        lastRx = System.currentTimeMillis()
+        lastRx = now()
         if (BuildConfig.DEBUG) Log.d("AmplifiRX",
             "rsmc seq=${f.seq} ack=${f.ack} len=${f.payload.size} rxSeq=$rxSeq txSeq=$txSeq")
+        if (f.ack != peerAck || ((txSeq - f.ack) and 0xFF) == 0) lastAckProgress = now()
         peerAck = f.ack
         if (!synced) {
             rxSeq = f.seq                     // before sync we just track the amp's position
@@ -548,13 +716,16 @@ class AmplifiBluetoothManager(private val context: Context) {
 
     /** Never send more than the amp's 8-frame window beyond its last ack. */
     private suspend fun awaitWindow(timeoutMs: Long = 3000): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
+        val deadline = now() + timeoutMs
+        while (now() < deadline) {
             if (((txSeq - peerAck) and 0xFF) < AmplifiProtocol.WINDOW - 1) return true
             delay(10)
         }
         Log.w(TAG, "RSMC window stalled: txSeq=$txSeq peerAck=$peerAck")
         stalled = true
+        // A stall means the amp stopped acknowledging us: replace the session rather than carry on
+        // looking connected while every command is dropped.
+        requestReconnect("RSMC window stalled")
         return false
     }
 
@@ -564,23 +735,29 @@ class AmplifiBluetoothManager(private val context: Context) {
             Log.d("AmplifiRX", "out aux=${it.aux.toString(16)} type=${it.type} ctr=${it.ctr} " +
                 "fl=${it.flags.toString(16)} win=${it.window} len=${it.payload.size}")
         }
-        val frame = txLock.withLock {
+        // Take the sequence number and write the frame in one step, so frames reach the amp in the
+        // order their numbers were handed out.
+        txLock.withLock {
             txSeq = (txSeq + 1) and 0xFF
-            AmplifiProtocol.packRsmcFrame(txSeq, rxSeq, (rxSeq + AmplifiProtocol.WINDOW) and 0xFF, payload)
+            sendRaw(AmplifiProtocol.packRsmcFrame(txSeq, rxSeq, (rxSeq + AmplifiProtocol.WINDOW) and 0xFF, payload))
         }
-        sendRaw(frame)
     }
 
     private suspend fun sendHeartbeat() {
-        val frame = txLock.withLock {
-            AmplifiProtocol.packRsmcFrame(txSeq, rxSeq, (rxSeq + AmplifiProtocol.WINDOW) and 0xFF)
+        txLock.withLock {
+            sendRaw(AmplifiProtocol.packRsmcFrame(txSeq, rxSeq, (rxSeq + AmplifiProtocol.WINDOW) and 0xFF))
         }
-        sendRaw(frame)
     }
 
-    private fun sendRaw(bytes: ByteArray) {
-        try { output?.write(bytes); output?.flush() }
-        catch (e: Exception) { Log.e(TAG, "write failed: ${e.message}") }
+    /** Write one frame. A failed write means the amp never saw it, so the link is no longer trustworthy. */
+    private fun sendRaw(bytes: ByteArray): Boolean {
+        val out = output ?: return false
+        return try { out.write(bytes); out.flush(); true }
+        catch (e: Exception) {
+            Log.e(TAG, "write failed: ${e.message}")
+            if (isRunning) requestReconnect("write failed")
+            false
+        }
     }
 
     // ---- streams -------------------------------------------------------------------------
@@ -601,16 +778,15 @@ class AmplifiBluetoothManager(private val context: Context) {
             val seg = Segment.parse(frame) ?: continue
             val svc = serviceForSrc(seg.aux) ?: continue
             val inbound = svc.stream.onFrame(frame)
-            if ((seg.flags and ServiceStream.FLAG_CLOSED) != 0 && seg.type == 1 && !svc.closed) {
-                Log.w(TAG, "the amp closed the ${if (svc.aux == AmplifiProtocol.AUX_EDITOR) "editor" else "preset"} stream")
-                svc.closed = true
-            }
+            if ((seg.flags and ServiceStream.FLAG_CLOSED) != 0 && seg.type == 1) markClosed(svc, "the amp closed it")
+            if (svc.stream.broken) markClosed(svc, "a segment was lost")
             if (BuildConfig.DEBUG) Log.d("AmplifiRX", "in  aux=${seg.aux.toString(16)} type=${seg.type} ctr=${seg.ctr} " +
                 "fl=${seg.flags.toString(16)} win=${seg.window} len=${seg.payload.size} new=${inbound.newBytes.size}")
             if (inbound.isConnect && !svc.connected.isCompleted) svc.connected.complete(Unit)
             if (inbound.newBytes.isEmpty()) continue
             touched += svc
             for (rec in svc.parser.feed(inbound.newBytes)) route(svc, rec)
+            if (svc.parser.broken) markClosed(svc, "unreadable data")
         }
         // Tell the amp how much we have consumed, or it stops sending after 4 KB.
         for (svc in touched) {
@@ -624,7 +800,6 @@ class AmplifiBluetoothManager(private val context: Context) {
         } else {
             if (BuildConfig.DEBUG) Log.d("AmplifiRX", "event svc=${svc.aux.toString(16)} type=${rec.type} len=${rec.data.size} " +
                 rec.data.take(24).joinToString("") { "%02x".format(it) })
-            svc.events.trySend(rec)
             onEvent(svc, rec)
         }
     }
@@ -632,7 +807,7 @@ class AmplifiBluetoothManager(private val context: Context) {
     /** Write bytes to a service's stream, respecting the MTU and the amp's flow-control credit. */
     private suspend fun streamWrite(svc: Service, data: ByteArray, timeoutMs: Long = 10_000): Boolean {
         var off = 0
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val deadline = now() + timeoutMs
         while (off < data.size) {
             if (stalled || !isRunning) return false
             var sent = 0
@@ -641,7 +816,7 @@ class AmplifiBluetoothManager(private val context: Context) {
                 if (n > 0) { outbox.trySend(svc.stream.dataSegment(data, off, n)); sent = n }
             }
             if (sent > 0) { off += sent; continue }
-            if (System.currentTimeMillis() > deadline) {
+            if (now() > deadline) {
                 Log.w(TAG, "no flow-control credit from the amp for ${timeoutMs}ms")
                 return false
             }
@@ -655,9 +830,17 @@ class AmplifiBluetoothManager(private val context: Context) {
         svc: Service, cmd: Int, args: ByteArray = ByteArray(0), timeoutMs: Long = STEP_TIMEOUT_MS
     ): Record? = svc.callLock.withLock {
         if (svc.closed) return@withLock null
+        if (svc.suspect) {
+            // The previous command timed out, so its answer may still be on its way. Give it a
+            // moment, then throw it away so it cannot be mistaken for this command's answer.
+            delay(LATE_REPLY_GRACE_MS)
+            svc.suspect = false
+        }
         while (svc.responses.tryReceive().isSuccess) { /* discard stale */ }
         if (!streamWrite(svc, AmplifiProtocol.command(cmd, args))) return@withLock null
-        withTimeoutOrNull(timeoutMs) { svc.responses.receive() }
+        val r = withTimeoutOrNull(timeoutMs) { svc.responses.receive() }
+        if (r == null) svc.suspect = true
+        r
     }
 
     // ---- session start --------------------------------------------------------------------
@@ -686,21 +869,31 @@ class AmplifiBluetoothManager(private val context: Context) {
         val count = call(lib, AmplifiProtocol.CMD_LIB_GET_NUM_PRESETS)?.data?.let { le32(it) } ?: 0
         if (count in 1..1000) _slotCount.value = count
 
-        val table = obtainSymbolTable(lib, device) ?: return SessionStart.FAILED
-        symbols = table
-
-        _status.value = "Handshaking…"
-        val crc = table.crcBytes()
-        val libHs = call(lib, AmplifiProtocol.CMD_HANDSHAKE, crc)
-        if (libHs == null || libHs.result != 0) {
-            // The cached table doesn't match this amp (different model or firmware).
-            File(context.filesDir, SYMBOL_CACHE_PREFIX + device.macAddress.replace(":", "")).delete()
-            fail("The amp rejected the symbol table (result ${libHs?.result}). Reconnect to download it again.")
-            return SessionStart.FAILED
+        val cache = File(context.filesDir, SYMBOL_CACHE_PREFIX + device.macAddress.replace(":", ""))
+        var downloadedThisTime = !cache.exists()
+        val table: SymbolTable
+        val crc: ByteArray
+        while (true) {
+            val t = obtainSymbolTable(lib, device) ?: return SessionStart.FAILED
+            symbols = t
+            _status.value = "Handshaking…"
+            val c = t.crcBytes()
+            val libHs = call(lib, AmplifiProtocol.CMD_HANDSHAKE, c)
+            if (libHs != null && libHs.result == 0) { table = t; crc = c; break }
+            // A cached table that does not match this amp (different model or firmware): drop it and
+            // fetch a fresh one, once, instead of asking the user to reconnect by hand.
+            cache.delete()
+            if (downloadedThisTime) {
+                fail("The amp rejected its own symbol table (result ${libHs?.result}).")
+                return SessionStart.FAILED
+            }
+            downloadedThisTime = true
         }
+        lib.handshaken.complete(Unit)
         call(ed, AmplifiProtocol.CMD_GET_VERSION)
         val edHs = call(ed, AmplifiProtocol.CMD_HANDSHAKE, crc)
         if (edHs == null || edHs.result != 0) { fail("The editor service rejected the handshake"); return SessionStart.FAILED }
+        ed.handshaken.complete(Unit)
 
         // Read-only queries the original app also makes at startup.
         call(ed, AmplifiProtocol.CMD_ED_GET_DIRTY_STATE)
@@ -778,20 +971,20 @@ class AmplifiBluetoothManager(private val context: Context) {
         }
         _loadedFrom.value = null              // the live tone's origin is unknown from here
         val ok = publish(r.body)
-        if (ok) sessionScope.launch { subscribeToParamEvents() }
+        if (ok) startSubscribe()
         return ok
     }
 
     fun refreshLiveTone() { sessionScope.launch { if (_ready.value) readLivePreset() } }
 
-    /** Slots that would not answer even after a retry (damaged?); skipped so they cannot stall the rest. */
-    private val badSlots = HashSet<Int>()
+    /** Slots that would not answer even after a retry; skipped so they cannot stall the rest. Cleared per session. */
+    private val badSlots: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
-    /** The preset stream once it is usable, waiting a little while it is being reopened. */
+    /** The preset stream once it is usable (opened and handshaken), waiting a while if it is being reopened. */
     private suspend fun awaitLibrarian(timeoutMs: Long = 10_000): Service? {
-        val end = System.currentTimeMillis() + timeoutMs
-        while (isRunning && System.currentTimeMillis() < end) {
-            librarian?.let { if (!it.closed && it.connected.isCompleted) return it }
+        val end = now() + timeoutMs
+        while (isRunning && now() < end) {
+            librarian?.let { if (!it.closed && it.handshaken.isCompleted) return it }
             delay(100)
         }
         return null
@@ -808,27 +1001,40 @@ class AmplifiBluetoothManager(private val context: Context) {
         return null
     }
 
+    private val scanning = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private suspend fun scanPresets(mac: String, total: Int) {
-        val found = mutableListOf<Pair<Int, String>>()
-        for (i in 0 until total) {
-            if (!isRunning || stalled) break
-            if (i in badSlots) continue
-            _scanProgress.value = i to total
-            val r = libCallForSlot(i, AmplifiProtocol.CMD_LIB_GET_PRESET_NAME, 3_000) ?: continue
-            if (r.result != 0) continue
-            val name = AmplifiProtocol.parsePresetName(r.body)
-            if (name.isNotEmpty()) found += i to name
-            if (i % 10 == 9) _ampPresets.value = found.toList()
+        if (!scanning.compareAndSet(false, true)) return          // one scan at a time
+        try {
+            val known = _ampPresets.value.toMap()
+            val found = LinkedHashMap<Int, String>()
+            var complete = true
+            for (i in 0 until total) {
+                if (!isRunning) { complete = false; break }
+                if (i in badSlots) { complete = false; continue }
+                _scanProgress.value = i to total
+                val r = libCallForSlot(i, AmplifiProtocol.CMD_LIB_GET_PRESET_NAME, 3_000)
+                if (r == null || r.result != 0) { complete = false; continue }
+                val name = AmplifiProtocol.parsePresetName(r.body)
+                if (name.isNotEmpty()) found[i] = name
+                if (i % 10 == 9) _ampPresets.value = NameList.merge(known, found)
+            }
+            val merged = NameList.merge(known, found)
+            if (merged.isNotEmpty()) _ampPresets.value = merged
+            // Only a complete pass may replace the saved list; a partial one must not erase it.
+            if (complete && merged.isNotEmpty()) saveCachedNames(mac, merged)
+            Log.i(TAG, "preset list: ${found.size} read of $total, ${merged.size} known" +
+                if (badSlots.isNotEmpty()) " (skipped $badSlots)" else "")
+        } finally {
+            _scanProgress.value = null
+            scanning.set(false)
         }
-        _scanProgress.value = null
-        if (found.isNotEmpty()) { _ampPresets.value = found.toList(); saveCachedNames(mac, found) }
-        Log.i(TAG, "preset list: ${found.size} of $total" + if (badSlots.isNotEmpty()) " (skipped $badSlots)" else "")
     }
 
     fun rescanPresets() {
         val mac = _hardwareState.value.connectedDevice?.macAddress ?: return
         if (!_ready.value || _scanProgress.value != null) return
-        sessionScope.launch { scanPresets(mac, 100) }
+        sessionScope.launch { scanPresets(mac, _slotCount.value) }
     }
 
     // ---- loading tones --------------------------------------------------------------------------
@@ -843,7 +1049,7 @@ class AmplifiBluetoothManager(private val context: Context) {
             val lib = librarian ?: return@launch
             if (!_ready.value) { _status.value = "Not connected"; return@launch }
             _status.value = "Loading ${label ?: "preset $index"}…"
-            suppressPatchEventsUntil = System.currentTimeMillis() + 2_000   // our own load echoes as an event
+            suppressPatchEventsUntil = now() + 2_000   // our own load echoes as an event
             val r = call(lib, AmplifiProtocol.CMD_LIB_LOAD_HARDWARE_PRESET, AmplifiProtocol.u32(index), 8_000)
             if (r == null || r.result != 0) {
                 Log.w(TAG, "load $index: reply=${r != null} result=${r?.result}")
@@ -930,7 +1136,7 @@ class AmplifiBluetoothManager(private val context: Context) {
             record(stats, bl)
         }
         for (i in 0 until _slotCount.value) {
-            if (!isRunning || stalled) return
+            if (!isRunning) return
             _status.value = "Learning your amp's models… ${i + 1}/${_slotCount.value}"
             if (i in badSlots) continue
             val r = libCallForSlot(i, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, 10_000) ?: continue
@@ -985,9 +1191,9 @@ class AmplifiBluetoothManager(private val context: Context) {
     private fun loadCachedModels(mac: String) {
         runCatching {
             val f = File(context.filesDir, MODEL_CACHE)
-            if (!f.exists()) return
+            if (!f.exists()) { _models.value = emptyMap(); _paramInfo.value = emptyMap(); return }
             val o = JSONObject(f.readText())
-            if (o.optString("mac") != mac) return
+            if (o.optString("mac") != mac) { _models.value = emptyMap(); _paramInfo.value = emptyMap(); return }
             val m = o.getJSONObject("models")
             _models.value = m.keys().asSequence().associateWith { k ->
                 m.getJSONArray(k).let { a -> (0 until a.length()).map { a.getString(it) } }
@@ -1059,11 +1265,11 @@ class AmplifiBluetoothManager(private val context: Context) {
     }
 
     private suspend fun drainParams() {
-        val ed = editor ?: return
         while (true) {
             val next = synchronized(senderLock) {
                 pendingParams.take().also { if (it == null) senderJob = null }
             } ?: return
+            val ed = editor ?: return            // the editor stream may have been reopened meanwhile
             val r = call(ed, AmplifiProtocol.CMD_ED_SET_DSP_MODEL_PARAM, next.second, 2_500)
             Log.i(TAG, "set ${next.first} -> result=${r?.result}")
             if (r == null || r.result != 0) _status.value = "The amp didn't accept that change"
@@ -1107,7 +1313,7 @@ class AmplifiBluetoothManager(private val context: Context) {
             val previous = old.body.takeIf { old.result == 0 && it.isNotEmpty() }
             if (previous != null) backUp(index, previous)
 
-            suppressPatchEventsUntil = System.currentTimeMillis() + 3_000
+            suppressPatchEventsUntil = now() + 3_000
             val set = call(lib, AmplifiProtocol.CMD_LIB_SET_PRESET_FILE, AmplifiProtocol.setPresetFileArgs(body, index), 15_000)
             if (set == null || set.result != 0) {
                 Log.w(TAG, "save: SetPresetFile refused: reply=${set != null} result=${set?.result} bytes=${body.size}")
@@ -1167,9 +1373,9 @@ class AmplifiBluetoothManager(private val context: Context) {
             if (a == null || a.result != 0 || a.body.isEmpty()) { Log.w(TAG, "writeback: couldn't read slot $index"); return@launch }
             backUp(index, a.body)
             Log.i(TAG, "writeback: read slot $index (${a.body.size} bytes), writing it back")
-            val t0 = System.currentTimeMillis()
+            val t0 = now()
             val w = call(lib, AmplifiProtocol.CMD_LIB_SET_PRESET_FILE, AmplifiProtocol.setPresetFileArgs(a.body, index), 20_000)
-            Log.i(TAG, "writeback: SetPresetFile -> reply=${w != null} result=${w?.result} in ${System.currentTimeMillis() - t0} ms")
+            Log.i(TAG, "writeback: SetPresetFile -> reply=${w != null} result=${w?.result} in ${now() - t0} ms")
             val b = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000)
             Log.i(TAG, "writeback: read again -> reply=${b != null} same=${b != null && b.body.contentEquals(a.body)}")
             val n = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_NAME, AmplifiProtocol.u32(index), 3_000)
@@ -1245,7 +1451,7 @@ class AmplifiBluetoothManager(private val context: Context) {
             Record.TYPE_PATCH_EVENT -> {
                 // The tone changed on the amp itself (e.g. its own buttons). Re-read it so
                 // the editor shows what is really playing -- unless we caused it.
-                if (System.currentTimeMillis() < suppressPatchEventsUntil) return
+                if (now() < suppressPatchEventsUntil) return
                 patchRefreshJob?.cancel()
                 patchRefreshJob = sessionScope.launch { delay(500); readLivePreset() }
             }
@@ -1268,7 +1474,7 @@ class AmplifiBluetoothManager(private val context: Context) {
 
     // Tuner commands go through one queue so they reach the amp in the order they were asked for.
     // As separate background jobs, "stop" (leaving the tab) could land after a later "start".
-    private var tunerOps = Channel<Boolean>(Channel.UNLIMITED)
+    @Volatile private var tunerOps = Channel<Boolean>(Channel.UNLIMITED)
 
     /** Engage the amp's tuner and start receiving its readings. */
     fun startAmpTuner() { tunerOps.trySend(true) }
@@ -1290,6 +1496,14 @@ class AmplifiBluetoothManager(private val context: Context) {
 
     private fun eventKey(slot: Int, param: Int): Long = (slot.toLong() shl 32) or (param.toLong() and 0xFFFFFFFFL)
 
+    @Volatile private var subscribeJob: Job? = null
+
+    /** (Re)subscribe for the tone now live; a newer request replaces one that is still running. */
+    private fun startSubscribe() {
+        subscribeJob?.cancel()
+        subscribeJob = sessionScope.launch { subscribeToParamEvents() }
+    }
+
     /**
      * Ask the amp to tell us when any parameter of the live tone changes, so turning a knob on the
      * amp moves the matching control here. Each (slot, parameter) is subscribed once per session.
@@ -1299,6 +1513,7 @@ class AmplifiBluetoothManager(private val context: Context) {
         val ed = editor ?: return
         val preset = _livePreset.value ?: return
         val map = HashMap<Long, PresetCodec.Param>()
+        val todo = ArrayList<Triple<Long, Int, Int>>()
         for (b in preset.blocks()) {
             val slot = table.id(b.symbol) ?: continue
             for (pr in b.params) {
@@ -1306,13 +1521,19 @@ class AmplifiBluetoothManager(private val context: Context) {
                 val pid = table.id(AmplifiProtocol.editorParamName(b.symbol, pr.name)) ?: continue
                 val k = eventKey(slot, pid)
                 map[k] = pr
-                if (subscribed.add(k) && isRunning) {
-                    call(ed, AmplifiProtocol.CMD_ED_REGISTER_DSP_EVENT, AmplifiProtocol.dspEventArgs(slot, pid), 1_500)
-                    delay(20)           // don't burst: the amp has been seen to close a stream under load
-                }
+                todo += Triple(k, slot, pid)
             }
         }
+        // Publish the new tone's parameters first, so changes made on the amp land in this tone even
+        // while the subscriptions below are still being made.
         eventParams = map
+        for ((k, slot, pid) in todo) {
+            if (!isRunning) return
+            if (k in subscribed) continue
+            val r = call(ed, AmplifiProtocol.CMD_ED_REGISTER_DSP_EVENT, AmplifiProtocol.dspEventArgs(slot, pid), 1_500)
+            if (r != null && r.result == 0) subscribed.add(k)       // a failed one is retried next time
+            delay(20)           // don't burst: the amp has been seen to close a stream under load
+        }
         Log.i(TAG, "subscribed to ${subscribed.size} parameters")
     }
 
@@ -1350,8 +1571,8 @@ class AmplifiBluetoothManager(private val context: Context) {
             if (table == null || ed == null || !_ready.value) return@launch
             val slot = table.id(AmplifiProtocol.SYM_TUNER) ?: return@launch
             val names = listOf("Enable", "Note", "Period", "Reference")
-            val end = System.currentTimeMillis() + seconds * 1000L
-            while (System.currentTimeMillis() < end && isRunning) {
+            val end = now() + seconds * 1000L
+            while (now() < end && isRunning) {
                 val line = StringBuilder()
                 for (n in names) {
                     val id = table.id(n)
@@ -1389,9 +1610,9 @@ class AmplifiBluetoothManager(private val context: Context) {
     private fun loadCachedNames(mac: String) {
         runCatching {
             val f = File(context.filesDir, NAME_CACHE)
-            if (!f.exists()) return
+            if (!f.exists()) { _ampPresets.value = emptyList(); return }
             val o = JSONObject(f.readText())
-            if (o.optString("mac") != mac) return
+            if (o.optString("mac") != mac) { _ampPresets.value = emptyList(); return }
             val arr = o.getJSONArray("names")
             _ampPresets.value = (0 until arr.length()).map { arr.getJSONObject(it).let { e -> e.getInt("i") to e.getString("n") } }
         }
