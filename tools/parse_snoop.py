@@ -16,8 +16,10 @@ directly (see the format notes inline below).
 import argparse
 import struct
 import sys
+from pathlib import Path
 
-sys.path.insert(0, ".")
+# Import bsp/rsmc from this script's own folder, never from whatever the current directory holds.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bsp import split_address, unpack_header  # noqa: E402
 from rsmc import Decoder  # noqa: E402

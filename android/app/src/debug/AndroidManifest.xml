@@ -4,7 +4,8 @@
         <!-- Debug builds only: lets the amp session be driven from adb. -->
         <receiver
             android:name="io.github.zz9pa.amplifree.bluetooth.DebugCommandReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.DUMP">
             <intent-filter>
                 <action android:name="io.github.zz9pa.amplifree.AMPDBG" />
             </intent-filter>
