@@ -117,12 +117,12 @@ class PresetCodecTest {
      * well-formed command that addresses the wrong parameter.
      */
     @Test
-    fun editorParameterNamesDropTheStateSuffixExceptOnTheRoutingBlock() {
+    fun editorParameterNamesDropTheStateSuffix() {
         assertEquals("Drive", AmplifiProtocol.editorParamName("Amp", "DriveState"))
         assertEquals("Bass", AmplifiProtocol.editorParamName("Amp", "BassState"))
         assertEquals(
-            "routing switches are already editor names",
-            "FX1EnableState",
+            "the routing switches follow the same rule",
+            "FX1Enable",
             AmplifiProtocol.editorParamName(AmplifiProtocol.ROUTING_BLOCK, "FX1EnableState")
         )
         // different symbols, different ids

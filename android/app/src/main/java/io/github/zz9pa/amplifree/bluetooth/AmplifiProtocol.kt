@@ -221,11 +221,11 @@ object AmplifiProtocol {
      * A preset stores `DriveState` while the Editor addresses the same knob as
      * `Drive`; they are different symbols with different ids, so sending the preset
      * name is a well-formed command that quietly addresses the wrong parameter.
-     * Every module parameter follows `<Name>State` -> `<Name>`. The routing block is
-     * the exception: its parameters (`FX1EnableState`, ...) are already editor names.
+     * Every parameter follows `<Name>State` -> `<Name>`, the routing block's switches and mix
+     * levels (`FX1EnableState` -> `FX1Enable`) included. Verified on hardware: the amp answers the
+     * `...State` name on the routing block with an error, so those controls did nothing until this.
      */
-    fun editorParamName(block: String, presetParam: String): String =
-        if (block == ROUTING_BLOCK) presetParam else presetParam.removeSuffix("State")
+    fun editorParamName(block: String, presetParam: String): String = presetParam.removeSuffix("State")
 
     // ---- the amp's own tuner ------------------------------------------------
     //

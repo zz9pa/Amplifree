@@ -148,6 +148,8 @@ fun SignalChainEditorScreen(
     masterVolume: Float? = null,
     onMasterVolume: (Float) -> Unit = {},
     onSwapModel: (block: String, model: String) -> Unit = { _, _ -> },
+    onImportTone: () -> Unit = {},
+    onExportTone: () -> Unit = {},
     /** A newly loaded tone starts with its cards folded, so a stray touch while scrolling cannot change it. */
     initiallyCollapsed: Boolean = true,
     modifier: Modifier = Modifier
@@ -360,7 +362,9 @@ fun SignalChainEditorScreen(
                 onUndo = onUndo,
                 onDismissSaveStatus = onDismissSaveStatus,
                 onOpenPresets = onOpenPresets,
-                onReload = onReload
+                onReload = onReload,
+                onImportTone = onImportTone,
+                onExportTone = onExportTone
             )
         }
 
@@ -452,22 +456,8 @@ private fun EditorHeader(
                     fontWeight = FontWeight.ExtraBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false).semantics { heading() }.testTag("tone_title")
+                    modifier = Modifier.weight(1f).semantics { heading() }.testTag("tone_title")
                 )
-                if (dirty) {
-                    Spacer(Modifier.width(10.dp))
-                    val modified = stringResource(R.string.editor_modified_description)
-                    Text(
-                        stringResource(R.string.editor_modified),
-                        color = AmpOrangeGlow,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier
-                            .semantics { contentDescription = modified }
-                            .testTag("modified_chip")
-                    )
-                }
-                Spacer(Modifier.weight(1f))
                 val foldLabel = stringResource(if (allCollapsed) R.string.editor_expand_all else R.string.editor_collapse_all)
                 IconButton(onClick = onToggleCollapseAll, modifier = Modifier.testTag("collapse_all")) {
                     Icon(
@@ -476,6 +466,18 @@ private fun EditorHeader(
                         tint = AmpTextSecondary
                     )
                 }
+            }
+            if (dirty) {
+                val modified = stringResource(R.string.editor_modified_description)
+                Text(
+                    stringResource(R.string.editor_modified),
+                    color = AmpOrangeGlow,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .semantics { contentDescription = modified }
+                        .testTag("modified_chip")
+                )
             }
             StatusLine(link, status, onConnect)
         }
@@ -581,7 +583,9 @@ private fun EditorFooter(
     onUndo: () -> Unit,
     onDismissSaveStatus: () -> Unit,
     onOpenPresets: () -> Unit,
-    onReload: () -> Unit
+    onReload: () -> Unit,
+    onImportTone: () -> Unit,
+    onExportTone: () -> Unit
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -619,13 +623,26 @@ private fun EditorFooter(
                 AmpOutlinedButton(stringResource(R.string.editor_browse_tones), onOpenPresets, Modifier.weight(1f))
                 AmpOutlinedButton(stringResource(R.string.editor_reload), onReload, Modifier.weight(1f), enabled = isConnected)
             }
+            ToneShareRow(isConnected, onImportTone, onExportTone)
         } else {
             actions(Modifier.fillMaxWidth())
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 AmpOutlinedButton(stringResource(R.string.editor_browse_tones), onOpenPresets, Modifier.weight(1f))
                 AmpOutlinedButton(stringResource(R.string.editor_reload), onReload, Modifier.weight(1f), enabled = isConnected)
             }
+            ToneShareRow(isConnected, onImportTone, onExportTone)
         }
+    }
+}
+
+/** Share a tone as a file, or apply one someone else shared. */
+@Composable
+private fun ToneShareRow(isConnected: Boolean, onImportTone: () -> Unit, onExportTone: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        AmpOutlinedButton(stringResource(R.string.editor_import_tone), onImportTone,
+            Modifier.weight(1f).testTag("import_tone"), enabled = isConnected)
+        AmpOutlinedButton(stringResource(R.string.editor_export_tone), onExportTone,
+            Modifier.weight(1f).testTag("export_tone"))
     }
 }
 

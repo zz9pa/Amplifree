@@ -118,6 +118,12 @@ class HardwareManager(context: Context) {
     fun setLiveInt(block: String, param: String, value: Int) = bt.setLiveParam(block, param, int = value)
     fun modelChoices(block: String): List<String> = bt.modelChoices(block)
 
+    /** The live tone as a shareable file, or null before it has been read. */
+    fun exportLiveTone() = bt.exportLiveTone()
+
+    /** Apply a tone file to the live tone (stored tones are untouched). */
+    fun importTone(file: io.github.zz9pa.amplifree.bluetooth.ToneFile) = bt.importTone(file)
+
     /** Download the preset names from the amp again. */
     fun rescanPresets() = bt.rescanPresets()
 

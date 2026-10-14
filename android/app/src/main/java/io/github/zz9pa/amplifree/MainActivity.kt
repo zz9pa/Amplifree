@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -30,6 +31,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import io.github.zz9pa.amplifree.bluetooth.ToneFile
 import io.github.zz9pa.amplifree.ui.AmplifreeUiState
 import io.github.zz9pa.amplifree.ui.AmplifreeViewModel
 import io.github.zz9pa.amplifree.ui.LinkStatus
@@ -106,6 +111,45 @@ class MainActivity : ComponentActivity() {
                 val paramInfo by hw.paramInfo.collectAsStateWithLifecycle()
                 val masterVolume by hw.masterVolume.collectAsStateWithLifecycle()
                 var showSaveDialog by rememberSaveable { mutableStateOf(false) }
+
+                // Sharing tones: a tone file is saved to / read from wherever the user picks, and a
+                // tone read from a file is shown to the user before it replaces the live tone.
+                val scope = rememberCoroutineScope()
+
+                // Loading a tone, reloading, or importing replaces the live tone. If it has changes
+                // that are not saved on the amp, ask first.
+                var pendingDiscard by remember { mutableStateOf<(() -> Unit)?>(null) }
+                val confirmDiscard: (() -> Unit) -> Unit = { action ->
+                    if (dirty) pendingDiscard = action else action()
+                }
+                var pendingTone by rememberSaveable { mutableStateOf<String?>(null) }
+                val exportLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("application/json")
+                ) { uri ->
+                    if (uri != null) scope.launch {
+                        val written = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val json = hw.exportLiveTone()?.toJson() ?: error("no tone")
+                                context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(json.toByteArray()) }
+                            }.isSuccess
+                        }
+                        if (!written) Toast.makeText(context, R.string.export_failed, Toast.LENGTH_LONG).show()
+                    }
+                }
+                val importLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    if (uri != null) scope.launch {
+                        val text = withContext(Dispatchers.IO) {
+                            runCatching { context.contentResolver.openInputStream(uri)!!.use { ToneFile.readLimited(it) } }.getOrNull()
+                        }
+                        when (val r = text?.let { ToneFile.parse(it) }) {
+                            is ToneFile.Parsed.Ok -> pendingTone = text
+                            is ToneFile.Parsed.Refused -> Toast.makeText(context, r.reason, Toast.LENGTH_LONG).show()
+                            null -> Toast.makeText(context, R.string.import_unreadable, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
                 val screenStates = rememberSaveableStateHolder()
 
                 BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -153,7 +197,7 @@ class MainActivity : ComponentActivity() {
                                             onSetFloat = { b, p, v -> hw.setLiveFloat(b, p, v) },
                                             onSetBool = { b, p, v -> hw.setLiveBool(b, p, v) },
                                             onOpenPresets = { viewModel.selectTab(AmplifreeUiState.TAB_TONES) },
-                                            onReload = { hw.refreshLiveTone() },
+                                            onReload = { confirmDiscard { hw.refreshLiveTone() } },
                                             dirty = dirty,
                                             saveStatus = saveStatus,
                                             canUndo = undoSlot != null,
@@ -166,7 +210,13 @@ class MainActivity : ComponentActivity() {
                                             onSetInt = { b, pm, v -> hw.setLiveInt(b, pm, v) },
                                             masterVolume = masterVolume,
                                             onMasterVolume = { v -> hw.setMasterVolume(v) },
-                                            onSwapModel = { b, m -> hw.swapModel(b, m) }
+                                            onSwapModel = { b, m -> hw.swapModel(b, m) },
+                                            onImportTone = { importLauncher.launch(arrayOf("application/json", "text/*", "application/octet-stream")) },
+                                            onExportTone = {
+                                                val base = livePreset?.name.orEmpty().filter { it.isLetterOrDigit() || it == ' ' || it == '-' || it == '_' }
+                                                    .trim().ifEmpty { "tone" }
+                                                exportLauncher.launch("$base.json")
+                                            }
                                         )
                                         AmplifreeUiState.TAB_TONES -> ToneBrowserScreen(
                                             ampPresets = ampPresets,
@@ -177,8 +227,10 @@ class MainActivity : ComponentActivity() {
                                             onConnect = openConnection,
                                             onRescan = { hw.rescanPresets() },
                                             onLoad = { i, n ->
-                                                hw.loadStoredPreset(i, n)
-                                                viewModel.selectTab(AmplifreeUiState.TAB_EDITOR)
+                                                confirmDiscard {
+                                                    hw.loadStoredPreset(i, n)
+                                                    viewModel.selectTab(AmplifreeUiState.TAB_EDITOR)
+                                                }
                                             }
                                         )
                                         AmplifreeUiState.TAB_TUNER -> TunerScreen(
@@ -199,6 +251,40 @@ class MainActivity : ComponentActivity() {
                                         existing = ampPresets,
                                         onSave = { slot, name -> hw.saveLiveToSlot(slot, name); showSaveDialog = false },
                                         onDismiss = { showSaveDialog = false }
+                                    )
+                                }
+
+                                pendingDiscard?.let { action ->
+                                    AlertDialog(
+                                        onDismissRequest = { pendingDiscard = null },
+                                        title = { Text(stringResource(R.string.discard_title)) },
+                                        text = { Text(stringResource(R.string.discard_body, livePreset?.name.orEmpty().ifBlank { "This tone" })) },
+                                        confirmButton = {
+                                            TextButton(onClick = { pendingDiscard = null; action() }) {
+                                                Text(stringResource(R.string.discard_confirm), fontWeight = FontWeight.Bold)
+                                            }
+                                        },
+                                        dismissButton = {
+                                            TextButton(onClick = { pendingDiscard = null }) { Text(stringResource(R.string.import_cancel)) }
+                                        }
+                                    )
+                                }
+
+                                (pendingTone?.let { ToneFile.parse(it) } as? ToneFile.Parsed.Ok)?.let { ok ->
+                                    AlertDialog(
+                                        onDismissRequest = { pendingTone = null },
+                                        title = { Text(stringResource(R.string.import_title)) },
+                                        text = {
+                                            Text(stringResource(if (dirty) R.string.import_body_dirty else R.string.import_body, ok.tone.name))
+                                        },
+                                        confirmButton = {
+                                            TextButton(onClick = { hw.importTone(ok.tone); pendingTone = null }) {
+                                                Text(stringResource(R.string.import_apply), fontWeight = FontWeight.Bold)
+                                            }
+                                        },
+                                        dismissButton = {
+                                            TextButton(onClick = { pendingTone = null }) { Text(stringResource(R.string.import_cancel)) }
+                                        }
                                     )
                                 }
 

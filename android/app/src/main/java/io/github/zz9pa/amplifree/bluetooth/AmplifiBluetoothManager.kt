@@ -1167,24 +1167,82 @@ class AmplifiBluetoothManager(private val context: Context) {
      * hardware until the first real run.
      */
     fun swapModel(block: String, model: String) {
+        sessionScope.launch { swapModelNow(block, model) }
+    }
+
+    /** Load [model] into [block], read the tone back and say so; true if the amp accepted it. */
+    private suspend fun swapModelNow(block: String, model: String): Boolean {
+        val table = symbols; val ed = editor
+        if (table == null || ed == null || !_ready.value) { _status.value = "Not connected"; return false }
+        val slot = table.id(block); val mid = table.id(model)
+        if (slot == null || mid == null) { Log.w(TAG, "unknown symbol: $block($slot) $model($mid)"); return false }
+        awaitParamsSent()
+        _status.value = "Loading $model…"
+        val args = AmplifiProtocol.u32(slot) + AmplifiProtocol.u32(mid)
+        val r = call(ed, AmplifiProtocol.CMD_ED_LOAD_DSP_MODEL, args, 5_000)
+        Log.i(TAG, "LoadDspModel($block, $model) -> reply=${r != null} result=${r?.result}")
+        if (r == null || r.result != 0) { _status.value = "The amp didn't accept $model"; return false }
+        delay(300)
+        val keepFrom = _loadedFrom.value
+        readLivePreset()
+        _loadedFrom.value = keepFrom
+        Log.i(TAG, "after swap: $block is " + _livePreset.value?.blocks()?.firstOrNull { it.symbol == block }?.flow)
+        _dirty.value = true                  // the live tone no longer matches the stored one
+        _status.value = "$block is now $model"
+        return true
+    }
+
+    // ---- sharing tones --------------------------------------------------------------------------
+
+    /** The live tone as a shareable file, or null before it has been read. */
+    fun exportLiveTone(): ToneFile? {
+        val preset = _livePreset.value ?: return null
+        return ToneFile.fromPreset(preset) { symbolName(it) }
+    }
+
+    /**
+     * Apply a tone file to the live tone: swap in the models it names, set its values, read the tone
+     * back. Only the live tone changes; nothing stored on the amp is touched. Values are kept to
+     * ranges that make sense, and whatever the amp does not recognise is skipped and counted.
+     */
+    fun importTone(file: ToneFile) {
         sessionScope.launch {
-            val table = symbols; val ed = editor
-            if (table == null || ed == null || !_ready.value) { _status.value = "Not connected"; return@launch }
-            val slot = table.id(block); val mid = table.id(model)
-            if (slot == null || mid == null) { Log.w(TAG, "unknown symbol: $block($slot) $model($mid)"); return@launch }
-            awaitParamsSent()
-            _status.value = "Loading $model…"
-            val args = AmplifiProtocol.u32(slot) + AmplifiProtocol.u32(mid)
-            val r = call(ed, AmplifiProtocol.CMD_ED_LOAD_DSP_MODEL, args, 5_000)
-            Log.i(TAG, "LoadDspModel($block, $model) -> reply=${r != null} result=${r?.result}")
-            if (r == null || r.result != 0) { _status.value = "The amp didn't accept $model"; return@launch }
-            delay(300)
+            val table = symbols
+            if (table == null || editor == null || !_ready.value) { _status.value = "Not connected"; return@launch }
+            val idOf: (String) -> Int? = { table.id(it) }
+            val live = _livePreset.value?.blocks() ?: run { _status.value = "Waiting for the tone to be read"; return@launch }
+
+            val swaps = ToneImport.planSwaps(file, live, idOf, AmplifiProtocol.ROUTING_BLOCK).swaps
+            var refused = 0
+            for ((i, s) in swaps.withIndex()) {
+                _status.value = "Importing ${file.name}: ${s.slot} (${i + 1}/${swaps.size})…"
+                if (!swapModelNow(s.slot, s.model)) refused++
+            }
+            val now = _livePreset.value?.blocks() ?: return@launch
+            val plan = ToneImport.planParams(file, now, _paramInfo.value, idOf)
+            for ((i, set) in plan.sets.withIndex()) {
+                if (!isRunning || !_ready.value) return@launch
+                if (i % 10 == 0) _status.value = "Importing ${file.name}: setting ${i + 1}/${plan.sets.size}…"
+                when (set.kind) {
+                    ToneImport.Setting.Kind.FLOAT -> setLiveParam(set.slot, set.presetName, value = set.value as Float)
+                    ToneImport.Setting.Kind.BOOL -> setLiveParam(set.slot, set.presetName, bool = set.value as Boolean)
+                    ToneImport.Setting.Kind.INT -> setLiveParam(set.slot, set.presetName, int = set.value as Int)
+                }
+            }
+            awaitParamsSent(15_000)
             val keepFrom = _loadedFrom.value
             readLivePreset()
             _loadedFrom.value = keepFrom
-            Log.i(TAG, "after swap: $block is " + _livePreset.value?.blocks()?.firstOrNull { it.symbol == block }?.flow)
-            _dirty.value = true                  // the live tone no longer matches the stored one
-            _status.value = "$block is now $model"
+            // The amp has no way to rename the live tone, so the imported name is kept here: it is
+            // shown now and is what the tone will be called when it is saved to a slot.
+            _livePreset.value?.name = file.name
+            _activeTone.value = file.name
+            _presetRevision.value = _presetRevision.value + 1
+            _dirty.value = true
+            val skipped = plan.skipped + refused
+            _status.value = "Imported ${file.name}: ${plan.sets.size} settings applied" +
+                if (skipped > 0) ", $skipped skipped" else ""
+            Log.i(TAG, "import ${file.name}: swaps=${swaps.size} refused=$refused sets=${plan.sets.size} skipped=${plan.skipped}")
         }
     }
 

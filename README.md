@@ -25,6 +25,8 @@ Goals:
 - browse and load the presets stored on the amp, with search
 - see and edit the tone that is currently live (amp, effects, on/off switches)
 - use the amp's own tuner
+- share tones: export the live tone to a small JSON file and import one someone else made
+  (see [docs/TONE_FORMAT.md](docs/TONE_FORMAT.md)); importing changes only the live tone, never the amp's stored tones
 
 Not goals: no cloud features, and nothing that talks to Line 6's servers.
 

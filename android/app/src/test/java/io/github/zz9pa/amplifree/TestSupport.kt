@@ -19,7 +19,8 @@ object TestSupport {
         "FX1EnableState", "CabEnableState",
         "Amp", "FX1", "GuitarProc",
         "ModelA", "ModelB", "ModelC",
-        "Tuner", "Enable", "Note"
+        "Tuner", "Enable", "Note",
+        "FX1Enable", "CabEnable"
     )
 
     fun symbolTable() = SymbolTable(SymbolTable.build(SYMBOLS))
