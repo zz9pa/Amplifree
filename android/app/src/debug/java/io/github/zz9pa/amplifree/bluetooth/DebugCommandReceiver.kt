@@ -57,6 +57,7 @@ class DebugCommandReceiver : BroadcastReceiver() {
             "save" -> mgr.saveLiveToSlot(arg, s)
             "writeback" -> mgr.debugWriteBack(arg)
             "tunerprobe" -> mgr.probeTuner(if (arg > 0) arg else 10)
+            "query" -> mgr.debugQuery(s.substringBefore(' '), s.substringAfter(' ', ""))
             "tuner" -> if (arg != 0) mgr.startAmpTuner() else mgr.stopAmpTuner()
             "symbols" -> {
                 val dev = mgr.getDiscoveredDevices().firstOrNull()

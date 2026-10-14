@@ -108,6 +108,8 @@
 
     <!-- Editor tab: header, states and footer -->
     <string name="editor_live_tone">Live Tone</string>
+    <string name="editor_collapse_all">Collapse all sections</string>
+    <string name="editor_expand_all">Expand all sections</string>
     <string name="editor_modified">● MODIFIED</string>
     <string name="editor_modified_description">Tone modified</string>
     <string name="editor_banner_disconnected">Not connected — changes won\'t reach the amp</string>

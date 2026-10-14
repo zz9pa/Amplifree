@@ -17,10 +17,25 @@ class ParamStatsTest {
 
     @Test fun otherRangesAreLearnedFromTheValuesSeenWithAMargin() {
         val b = ParamStatsBuilder()
-        b.addFloat("Gate.Thresh", -63f); b.addFloat("Gate.Thresh", -40f)
-        val r = b.build().getValue("Gate.Thresh").sliderRange(-50f)
-        assertTrue(r.start < -63f && r.endInclusive > -40f)
-        assertTrue(r.start > -70f && r.endInclusive < -35f)
+        b.addFloat("Wah.Freq", 120f); b.addFloat("Wah.Freq", 400f)
+        val r = b.build().getValue("Wah.Freq").sliderRange(200f)
+        assertTrue(r.start < 120f && r.endInclusive > 400f)
+        assertTrue(r.start > 80f && r.endInclusive < 440f)
+    }
+
+    @Test fun levelsBelowZeroAreBoundedByZeroDecibelsAndTheNoiseFloor() {
+        val b = ParamStatsBuilder()
+        b.addFloat("Gate.Thresh", -96f); b.addFloat("Gate.Thresh", -24f)
+        val r = b.build().getValue("Gate.Thresh").sliderRange(-44f)
+        assertEquals(-96f..0f, r)
+    }
+
+    @Test fun aDecibelRangeWithoutTheFloorKeepsAMarginBelow() {
+        val b = ParamStatsBuilder()
+        b.addFloat("Comp.Thresh", -60f); b.addFloat("Comp.Thresh", -20f)
+        val r = b.build().getValue("Comp.Thresh").sliderRange(-30f)
+        assertEquals(0f, r.endInclusive)
+        assertTrue(r.start < -60f && r.start >= -96f)
     }
 
     @Test fun aValueOutsideTheLearnedRangeStillFits() {

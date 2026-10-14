@@ -15,6 +15,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.UnfoldLess
+import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.Saver
@@ -63,6 +65,10 @@ import kotlinx.coroutines.launch
 private const val ROUTING = "GuitarProc"
 
 /** Card keys that are not blocks of the chain. */
+private val SLIDER_SIDE_MARGIN = 16.dp
+
+/** Ordinary 0..1 knobs are shown on a 0 to 10 dial, like the controls on the amp. */
+private const val KNOB_SCALE = 10f
 private const val KEY_MASTER = "@master"
 private const val KEY_PATH = "@path"
 private const val KEY_MIX = "@mix"
@@ -142,6 +148,8 @@ fun SignalChainEditorScreen(
     masterVolume: Float? = null,
     onMasterVolume: (Float) -> Unit = {},
     onSwapModel: (block: String, model: String) -> Unit = { _, _ -> },
+    /** A newly loaded tone starts with its cards folded, so a stray touch while scrolling cannot change it. */
+    initiallyCollapsed: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val isConnected = link.isReady
@@ -183,6 +191,8 @@ fun SignalChainEditorScreen(
                 range = 0f..1f,
                 enabled = isConnected,
                 key = "master.${masterVolume}",
+                // The amp's own knob is marked 0 to 11, so the number shown matches it.
+                display = ::masterDisplay,
                 onCommit = onMasterVolume
             )
         }
@@ -211,7 +221,10 @@ fun SignalChainEditorScreen(
 
         // ---- mix levels and routing (they live on the routing block) ---------
         val others = routing.params.filter {
-            (it.isFloat || it.isBool || it.isInt) && !(it.isBool && it.name.endsWith("EnableState"))
+            (it.isFloat || it.isBool || it.isInt) && !(it.isBool && it.name.endsWith("EnableState")) &&
+                // Not a user control: each effect model sets how it blends in, and nothing says what
+                // the values mean. The value is still read and passed through untouched.
+                !it.name.endsWith("MixTypeState")
         }
         if (others.isNotEmpty()) {
             cards += EditorCard(KEY_MIX, mixTitle, weight = others.size + 1) {
@@ -282,7 +295,13 @@ fun SignalChainEditorScreen(
         if (KEY_MIX in present) add(JumpChip(stringResource(R.string.chip_mix), KEY_MIX))
     }
 
-    val collapsed = rememberSaveable(saver = CollapsedSaver) { mutableStateOf(emptySet<String>()) }
+    // "Collapse all" folds every card except the master volume, which is a device setting rather
+    // than part of the tone and is always worth having to hand. A different tone starts folded again.
+    val foldable = cards.map { it.key }.filter { it != KEY_MASTER }.toSet()
+    val collapsed = rememberSaveable(preset, saver = CollapsedSaver) {
+        mutableStateOf(if (initiallyCollapsed) foldable else emptySet())
+    }
+    val allCollapsed = foldable.isNotEmpty() && foldable.all { it in collapsed.value }
     val scope = rememberCoroutineScope()
     val firstState = rememberLazyListState()
     val secondState = rememberLazyListState()
@@ -323,6 +342,10 @@ fun SignalChainEditorScreen(
                 status = status,
                 chips = chips,
                 wide = wide,
+                allCollapsed = allCollapsed,
+                onToggleCollapseAll = {
+                    collapsed.value = if (allCollapsed) collapsed.value - foldable else collapsed.value + foldable
+                },
                 onChip = ::jumpTo,
                 onConnect = onConnect
             )
@@ -414,6 +437,8 @@ private fun EditorHeader(
     status: FriendlyStatus,
     chips: List<JumpChip>,
     wide: Boolean,
+    allCollapsed: Boolean,
+    onToggleCollapseAll: () -> Unit,
     onChip: (String) -> Unit,
     onConnect: () -> Unit
 ) {
@@ -440,6 +465,15 @@ private fun EditorHeader(
                         modifier = Modifier
                             .semantics { contentDescription = modified }
                             .testTag("modified_chip")
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                val foldLabel = stringResource(if (allCollapsed) R.string.editor_expand_all else R.string.editor_collapse_all)
+                IconButton(onClick = onToggleCollapseAll, modifier = Modifier.testTag("collapse_all")) {
+                    Icon(
+                        if (allCollapsed) Icons.Default.UnfoldMore else Icons.Default.UnfoldLess,
+                        contentDescription = foldLabel,
+                        tint = AmpTextSecondary
                     )
                 }
             }
@@ -706,6 +740,15 @@ private fun routingLabel(name: String): String {
     }
 }
 
+/** The master volume on the amp's 0 to 11 dial: whole numbers show without a decimal, so 11 reads "11". */
+internal fun masterDisplay(volume: Float): String = scaledDisplay(volume, 11f)
+
+/** A 0..1 value shown on a 0..[scale] dial, with a decimal only when it is not a whole number. */
+internal fun scaledDisplay(value: Float, scale: Float): String {
+    val tenths = Math.round(value.coerceIn(0f, 1f) * scale * 10f)
+    return if (tenths % 10 == 0) (tenths / 10).toString() else "%d.%d".format(tenths / 10, tenths % 10)
+}
+
 /** One editable parameter: a slider, a switch or a choice, depending on its type. */
 @Composable
 private fun ParamRow(
@@ -779,11 +822,12 @@ private fun ParamSlider(
     range: ClosedFloatingPointRange<Float>?,
     enabled: Boolean,
     key: String,
+    display: ((Float) -> String)? = null,
     onCommit: (Float) -> Unit
 ) {
     var value by rememberSaveable(key) { mutableFloatStateOf(initial) }
     if (range == null) {
-        val shown = "%.2f".format(initial)
+        val shown = display?.invoke(initial) ?: "%.2f".format(initial)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -799,8 +843,10 @@ private fun ParamSlider(
         return
     }
     val unit = range.start >= 0f && range.endInclusive <= 1f
-    val shown = if (unit) "%.2f".format(value) else "%.1f".format(value)
-    Column(Modifier.padding(vertical = 2.dp)) {
+    val shown = display?.invoke(value) ?: if (unit) scaledDisplay(value, KNOB_SCALE) else "%.1f".format(value)
+    // The side margin keeps the ends of the slider clear of the edge-swipe zone where Android's
+    // back gesture lives, so dragging to full or zero cannot dismiss the app.
+    Column(Modifier.padding(horizontal = SLIDER_SIDE_MARGIN, vertical = 2.dp)) {
         // The slider below says its own name and value to TalkBack, so this line is visual only.
         Row(
             modifier = Modifier.fillMaxWidth().clearAndSetSemantics {},

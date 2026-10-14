@@ -40,6 +40,7 @@ class SignalChainEditorScreenTest {
         link: LinkStatus = LinkStatus.READY,
         status: FriendlyStatus = none,
         dirty: Boolean = false,
+        collapsed: Boolean = false,
         onConnect: () -> Unit = {},
         onSetBool: (String, String, Boolean) -> Unit = { _, _, _ -> },
         onSetFloat: (String, String, Float) -> Unit = { _, _, _ -> }
@@ -47,7 +48,8 @@ class SignalChainEditorScreenTest {
         SignalChainEditorScreen(
             preset = preset, revision = 0, link = link, status = status,
             onSetFloat = onSetFloat, onSetBool = onSetBool,
-            onOpenPresets = {}, onReload = {}, onConnect = onConnect, dirty = dirty
+            onOpenPresets = {}, onReload = {}, onConnect = onConnect, dirty = dirty,
+            initiallyCollapsed = collapsed
         )
     }
 
@@ -208,6 +210,31 @@ class SignalChainEditorScreenTest {
         rule.onNodeWithTag("save_button").assertIsNotEnabled()
         rule.onNodeWithText("SAVE (COMING SOON)").assertExists()
     }
+
+    // ---- folded cards --------------------------------------------
+
+    @Test fun aLoadedToneStartsFoldedSoScrollingCannotTouchAControl() {
+        rule.setContent { Editor(collapsed = true) }
+        rule.onNodeWithTag("param_Bass").assertDoesNotExist()
+        rule.onNodeWithTag("enable_FX1EnableState").assertDoesNotExist()
+        rule.onNodeWithTag("card_Amp").assertExists()
+    }
+
+    @Test fun openingAFoldedCardShowsItsControls() {
+        rule.setContent { Editor(collapsed = true) }
+        rule.onNodeWithTag("toggle_Amp").performClick()
+        rule.onNodeWithTag("param_Bass").assertIsDisplayed()
+    }
+
+    @Test fun collapseAllFoldsTheCardsAndExpandAllOpensThemAgain() {
+        rule.setContent { Editor() }
+        rule.onNodeWithTag("param_Bass").assertIsDisplayed()
+        rule.onNodeWithTag("collapse_all").performClick()
+        rule.onNodeWithTag("param_Bass").assertDoesNotExist()
+        rule.onNodeWithTag("collapse_all").performClick()
+        rule.onNodeWithTag("param_Bass").assertIsDisplayed()
+    }
+
 }
 
 /** The same editor in a window wide enough for two columns, and in a narrow one. */
@@ -273,4 +300,5 @@ class SignalChainEditorNarrowTest {
         rule.onNodeWithTag("editor_column_first").assertDoesNotExist()
         rule.onNodeWithTag("signal_chain_editor").assertIsDisplayed()
     }
+
 }

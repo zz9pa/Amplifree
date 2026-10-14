@@ -1588,6 +1588,29 @@ class AmplifiBluetoothManager(private val context: Context) {
         }
     }
 
+    /**
+     * Debug aid: ask the amp what it says about a slot ("Gate") or one of its parameters
+     * ("Gate.ThreshState"), and write the raw reply to app storage for inspection.
+     */
+    fun debugQuery(target: String, modelArg: String = "") {
+        sessionScope.launch {
+            val table = symbols; val ed = editor
+            if (table == null || ed == null || !_ready.value) return@launch
+            val (block, param) = target.split(".", limit = 2).let { it[0] to it.getOrNull(1) }
+            val slot = table.id(block) ?: run { Log.w(TAG, "query: unknown $block"); return@launch }
+            val args = when {
+                param != null -> AmplifiProtocol.dspEventArgs(slot, table.id(param) ?: return@launch)
+                modelArg.isNotEmpty() -> AmplifiProtocol.u32(slot) + AmplifiProtocol.u32(table.id(modelArg) ?: return@launch)
+                else -> AmplifiProtocol.u32(slot)
+            }
+            val cmd = if (param != null) AmplifiProtocol.CMD_ED_GET_DSP_MODEL_PARAM else AmplifiProtocol.CMD_ED_QUERY_DSP_MODEL
+            val r = call(ed, cmd, args, 5_000)
+            val hex = r?.body?.joinToString("") { "%02x".format(it) }
+            Log.i(TAG, "query $target ${modelArg}: cmd=$cmd reply=${r != null} result=${r?.result} len=${r?.body?.size}")
+            if (hex != null) File(context.filesDir, "debug_query.txt").writeText("$target $modelArg result=${r.result}\n$hex\n")
+        }
+    }
+
     fun stopAmpTuner() {
         tunerActive = false
         _ampTunerEngaged.value = false
