@@ -110,6 +110,9 @@ object PresetCodec {
 
         fun sym(i: Int): String = symbols.getOrElse(i) { "sym#$i" }
 
+        /** The same tone with a different list of records (same symbols, same tail). */
+        fun withRecords(newRecords: MutableList<Record>) = Preset(newRecords, tail, symbols)
+
         var name: String
             get() = records.firstOrNull { it.type == TYPE_STRING }?.asString ?: ""
             set(v) { records.firstOrNull { it.type == TYPE_STRING }?.setString(v) }

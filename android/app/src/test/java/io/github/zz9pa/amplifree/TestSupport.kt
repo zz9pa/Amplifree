@@ -20,7 +20,8 @@ object TestSupport {
         "Amp", "FX1", "GuitarProc",
         "ModelA", "ModelB", "ModelC",
         "Tuner", "Enable", "Note",
-        "FX1Enable", "CabEnable"
+        "FX1Enable", "CabEnable",
+        "headphoneState", "VolumePedal", "VolumeState"
     )
 
     fun symbolTable() = SymbolTable(SymbolTable.build(SYMBOLS))
@@ -40,20 +41,29 @@ object TestSupport {
     }
 
     /** A small but structurally faithful preset: info section, then three DSP blocks. */
-    fun preset(name: String = "Test Tone", drive: Float = 0.5f, bass: Float = 0.25f): ByteArray {
+    fun preset(name: String = "Test Tone", drive: Float = 0.5f, bass: Float = 0.25f, liveOnly: Boolean = false): ByteArray {
         val w = W()
         // preset-info section
         w.rec(PresetCodec.KEY_SECTION, PresetCodec.TYPE_INT, PresetCodec.SECTION_PS)
         w.rec(PresetCodec.KEY_MAGIC, PresetCodec.TYPE_INT, 0x50525350)
         w.str(0, name)
+        if (liveOnly) {                                        // tone-info items: 6 is live-only
+            w.rec(1, PresetCodec.TYPE_INT, 11)
+            w.f(6, 0.8f)
+            w.rec(7, PresetCodec.TYPE_INT, 77)
+        } else {
+            w.rec(7, PresetCodec.TYPE_INT, 77)
+            w.rec(1, PresetCodec.TYPE_INT, 11)
+        }
         w.end(PresetCodec.KEY_SECTION_END)
         // signal chain
         w.rec(PresetCodec.KEY_SECTION, PresetCodec.TYPE_INT, PresetCodec.SECTION_DSP)
         w.rec(PresetCodec.KEY_MAGIC, PresetCodec.TYPE_INT, 0x47545254)
 
         w.rec(PresetCodec.KEY_BLOCK, PresetCodec.TYPE_ENUM, id("GuitarProc"))
-        w.rec(PresetCodec.KEY_PARAM_COUNT, PresetCodec.TYPE_INT, 2)
+        w.rec(PresetCodec.KEY_PARAM_COUNT, PresetCodec.TYPE_INT, if (liveOnly) 3 else 2)
         w.rec(id("FX1EnableState"), PresetCodec.TYPE_BOOL, 1)
+        if (liveOnly) w.rec(id("headphoneState"), PresetCodec.TYPE_BOOL, 0)
         w.rec(id("CabEnableState"), PresetCodec.TYPE_BOOL, 0)
 
         w.rec(PresetCodec.KEY_BLOCK, PresetCodec.TYPE_ENUM, id("Amp"))
@@ -66,6 +76,12 @@ object TestSupport {
         w.rec(PresetCodec.KEY_FLOW, PresetCodec.TYPE_ENUM, id("ModelB"))
         w.rec(PresetCodec.KEY_PARAM_COUNT, PresetCodec.TYPE_INT, 1)
         w.f(id("DriveState"), 0.75f)
+
+        if (liveOnly) {
+            w.rec(PresetCodec.KEY_BLOCK, PresetCodec.TYPE_ENUM, id("VolumePedal"))
+            w.rec(PresetCodec.KEY_PARAM_COUNT, PresetCodec.TYPE_INT, 1)
+            w.f(id("VolumeState"), 1f)
+        }
 
         w.end(PresetCodec.KEY_SECTION_END)
         return w.bytes()

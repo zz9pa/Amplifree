@@ -35,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import io.github.zz9pa.amplifree.bluetooth.ToneFile
+import io.github.zz9pa.amplifree.bluetooth.parseToneText
 import io.github.zz9pa.amplifree.ui.AmplifreeUiState
 import io.github.zz9pa.amplifree.ui.AmplifreeViewModel
 import io.github.zz9pa.amplifree.ui.LinkStatus
@@ -143,7 +144,7 @@ class MainActivity : ComponentActivity() {
                         val text = withContext(Dispatchers.IO) {
                             runCatching { context.contentResolver.openInputStream(uri)!!.use { ToneFile.readLimited(it) } }.getOrNull()
                         }
-                        when (val r = text?.let { ToneFile.parse(it) }) {
+                        when (val r = text?.let { parseToneText(it) }) {
                             is ToneFile.Parsed.Ok -> pendingTone = text
                             is ToneFile.Parsed.Refused -> Toast.makeText(context, r.reason, Toast.LENGTH_LONG).show()
                             null -> Toast.makeText(context, R.string.import_unreadable, Toast.LENGTH_LONG).show()
@@ -226,6 +227,7 @@ class MainActivity : ComponentActivity() {
                                             status = friendly,
                                             onConnect = openConnection,
                                             onRescan = { hw.rescanPresets() },
+                                            onRename = { i, n -> hw.renameStoredTone(i, n) },
                                             onLoad = { i, n ->
                                                 confirmDiscard {
                                                     hw.loadStoredPreset(i, n)
@@ -270,7 +272,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
 
-                                (pendingTone?.let { ToneFile.parse(it) } as? ToneFile.Parsed.Ok)?.let { ok ->
+                                (pendingTone?.let { parseToneText(it) } as? ToneFile.Parsed.Ok)?.let { ok ->
                                     AlertDialog(
                                         onDismissRequest = { pendingTone = null },
                                         title = { Text(stringResource(R.string.import_title)) },

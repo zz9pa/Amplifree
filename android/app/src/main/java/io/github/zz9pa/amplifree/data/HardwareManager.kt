@@ -47,6 +47,9 @@ class HardwareManager(context: Context) {
     /** True once the amp session is initialised and commands can be sent. */
     val ready: StateFlow<Boolean> = bt.ready
 
+    /** The amp's firmware version (for example "2.60.0") once the session has opened, else null. */
+    val firmwareVersion: StateFlow<String?> = bt.firmwareVersion
+
     /** Name of the tone live on the amp. */
     val activeTone: StateFlow<String?> = bt.activeTone
 
@@ -105,6 +108,7 @@ class HardwareManager(context: Context) {
 
     fun saveLiveToSlot(index: Int, name: String) = bt.saveLiveToSlot(index, name)
     fun undoLastSave() = bt.undoLastSave()
+    fun renameStoredTone(index: Int, name: String) = bt.renameStoredTone(index, name)
     fun clearSaveStatus() = bt.clearSaveStatus()
 
     /** Models each block can hold, learned from the amp's own tones. */

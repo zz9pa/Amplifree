@@ -51,6 +51,8 @@ class AmplifiBluetoothManager(private val context: Context) {
         private const val KEEPALIVE_QUIET_MS = 2_500L
         private const val LINK_DEAD_MS = 10_000L
         private const val MAX_NAME_LENGTH = 32
+        /** A stored tone is a little over a kilobyte; anything much bigger is not one. */
+        private const val MAX_STORED_BYTES = 4096
         private const val SESSION_RETRIES = 3
         private const val SESSION_RETRY_WAIT_MS = 10_000L
         /** Slot id the amp uses for device-wide settings such as master volume. */
@@ -739,7 +741,7 @@ class AmplifiBluetoothManager(private val context: Context) {
         // order their numbers were handed out.
         txLock.withLock {
             txSeq = (txSeq + 1) and 0xFF
-            sendRaw(AmplifiProtocol.packRsmcFrame(txSeq, rxSeq, (rxSeq + AmplifiProtocol.WINDOW) and 0xFF, payload))
+            sendRaw(AmplifiProtocol.packRsmcFrame(txSeq, rxSeq, (rxSeq + AmplifiProtocol.WINDOW) and 0xFF, AmplifiProtocol.padTo4(payload)))
         }
     }
 
@@ -865,7 +867,8 @@ class AmplifiBluetoothManager(private val context: Context) {
         if (!streamWrite(lib, AmplifiProtocol.LIBRARIAN_HELLO)) { fail("Couldn't open the preset service"); return SessionStart.FAILED }
         withTimeoutOrNull(STEP_TIMEOUT_MS) { while (lib.parser.skip > 0) delay(20) }
 
-        call(lib, AmplifiProtocol.CMD_GET_VERSION) ?: run { fail("The amp isn't answering"); return SessionStart.FAILED }
+        val libVersion = call(lib, AmplifiProtocol.CMD_GET_VERSION) ?: run { fail("The amp isn't answering"); return SessionStart.FAILED }
+        noteVersion("librarian", libVersion)
         val count = call(lib, AmplifiProtocol.CMD_LIB_GET_NUM_PRESETS)?.data?.let { le32(it) } ?: 0
         if (count in 1..1000) _slotCount.value = count
 
@@ -890,7 +893,7 @@ class AmplifiBluetoothManager(private val context: Context) {
             downloadedThisTime = true
         }
         lib.handshaken.complete(Unit)
-        call(ed, AmplifiProtocol.CMD_GET_VERSION)
+        noteVersion("editor", call(ed, AmplifiProtocol.CMD_GET_VERSION))
         val edHs = call(ed, AmplifiProtocol.CMD_HANDSHAKE, crc)
         if (edHs == null || edHs.result != 0) { fail("The editor service rejected the handshake"); return SessionStart.FAILED }
         ed.handshaken.complete(Unit)
@@ -1082,6 +1085,21 @@ class AmplifiBluetoothManager(private val context: Context) {
     val models: StateFlow<Map<String, List<String>>> = _models.asStateFlow()
 
     /** The amp's master volume (a device setting, not part of a tone), 0..1; null until read. */
+    /**
+     * The firmware version the amp reports when each service opens, e.g. "2.60.0".
+     */
+    private val _firmwareVersion = MutableStateFlow<String?>(null)
+    val firmwareVersion: StateFlow<String?> = _firmwareVersion.asStateFlow()
+
+    private fun noteVersion(service: String, reply: Record?) {
+        val d = reply?.data ?: return
+        if (d.size < 4) return
+        val word = le32(d)
+        val text = AmplifiProtocol.formatVersion(word)
+        Log.i(TAG, "$service version word = 0x%08x -> $text".format(word))
+        if (service == "editor") _firmwareVersion.value = text
+    }
+
     private val _masterVolume = MutableStateFlow<Float?>(null)
     val masterVolume: StateFlow<Float?> = _masterVolume.asStateFlow()
     @Volatile private var masterParamId = -1
@@ -1241,7 +1259,8 @@ class AmplifiBluetoothManager(private val context: Context) {
             _dirty.value = true
             val skipped = plan.skipped + refused
             _status.value = "Imported ${file.name}: ${plan.sets.size} settings applied" +
-                if (skipped > 0) ", $skipped skipped" else ""
+                (if (skipped > 0) ", $skipped skipped" else "") +
+                (if (plan.unmatched.isNotEmpty()) ". Not on this amp: " + plan.unmatched.joinToString { it.substringAfter(": ") } else "")
             Log.i(TAG, "import ${file.name}: swaps=${swaps.size} refused=$refused sets=${plan.sets.size} skipped=${plan.skipped}")
         }
     }
@@ -1303,6 +1322,14 @@ class AmplifiBluetoothManager(private val context: Context) {
             int != null -> AmplifiProtocol.setDspParamInt(slotId, paramId, int)
             else -> return
         }
+        // Keep the app's own copy of the tone in step, so a later Save has every change whichever way it was made.
+        _livePreset.value?.param(block, param)?.record?.let { r ->
+            when {
+                value != null -> r.setFloat(value)
+                bool != null -> r.setBool(bool)
+                int != null -> r.setInt(int)
+            }
+        }
         _dirty.value = true
         enqueueParam("$block.$editorName", args)
     }
@@ -1362,7 +1389,22 @@ class AmplifiBluetoothManager(private val context: Context) {
 
             val clean = newName.filter { it.code in 32..126 }.trim().take(MAX_NAME_LENGTH)
             if (clean.isNotEmpty() && clean != preset.name) preset.name = clean
-            val body = preset.encode()
+
+            // A stored tone is the live one without a few live-only values; the copy of the tone it came
+            // from (when known) says which, so the rule follows what this amp really stores.
+            val table = symbols
+            val sourceBody = _loadedFrom.value?.takeIf { it in 0 until _slotCount.value }?.let {
+                call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(it), 10_000)?.takeIf { r -> r.result == 0 && r.body.isNotEmpty() }?.body
+            }
+            val source = if (table != null && sourceBody != null) runCatching { PresetCodec.decode(sourceBody, table.names) }.getOrNull()?.takeIf { it.isComplete } else null
+            val stored = StoredForm.of(preset, source)
+            val body = stored.encode()
+            val check = if (table != null) runCatching { PresetCodec.decode(body, table.names) }.getOrNull() else null
+            if (check == null || !check.isComplete || check.blocks().size != preset.blocks().size || body.size > MAX_STORED_BYTES) {
+                Log.w(TAG, "save: the stored form did not check out (${body.size} bytes)")
+                _saveStatus.value = "This tone could not be prepared for storing, so nothing was changed"
+                return@launch
+            }
 
             // Keep what is there now. A timeout means we can't tell, so don't overwrite blind;
             // a clean "no such preset" answer means the slot is empty.
@@ -1375,12 +1417,24 @@ class AmplifiBluetoothManager(private val context: Context) {
             val set = call(lib, AmplifiProtocol.CMD_LIB_SET_PRESET_FILE, AmplifiProtocol.setPresetFileArgs(body, index), 15_000)
             if (set == null || set.result != 0) {
                 Log.w(TAG, "save: SetPresetFile refused: reply=${set != null} result=${set?.result} bytes=${body.size}")
-                _saveStatus.value = "The amp refused to store it (result ${set?.result}). Nothing was changed."
+                val intact = previous == null || putBackIfChanged(index, previous)
+                _saveStatus.value = if (intact) "The amp did not store it (result ${set?.result}). Slot $index is as it was."
+                                    else "The amp did not store it properly and slot $index could not be checked. Use Undo to put it back."
+                if (!intact && previous != null) { undoBody = previous; _undoSlot.value = index }
                 return@launch
             }
 
             val back = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000)
             val verified = back != null && back.result == 0 && back.body.contentEquals(body)
+            if (!verified && previous != null) {
+                // What is in the slot is not what was sent (a write cut short, say): put back what was there.
+                val undo = call(lib, AmplifiProtocol.CMD_LIB_SET_PRESET_FILE, AmplifiProtocol.setPresetFileArgs(previous, index), 15_000)
+                Log.w(TAG, "save: read-back differed; restored the old tone: ${undo?.result}")
+                _saveStatus.value = if (undo != null && undo.result == 0) "The amp did not store it correctly, so slot $index was put back as it was"
+                                    else "The amp did not store slot $index correctly and it could not be put back. Use Undo, or reload it."
+                _undoSlot.value = index; undoBody = previous
+                return@launch
+            }
 
             undoBody = previous
             _undoSlot.value = if (previous != null) index else null
@@ -1395,6 +1449,83 @@ class AmplifiBluetoothManager(private val context: Context) {
             Log.i(TAG, "save: slot $index name='$name' verified=$verified bytes=${body.size}")
             _saveStatus.value = if (verified) "Saved to slot $index as \"$name\""
                                 else "Stored in slot $index, but reading it back didn't match. Check it on the amp."
+        }
+    }
+
+    /**
+     * After a write that got no proper answer, make sure slot [index] still holds [previous] and put it
+     * back if the amp stored something else (a write cut short can leave half a tone). True if the slot
+     * is known to hold [previous] again.
+     */
+    private suspend fun putBackIfChanged(index: Int, previous: ByteArray): Boolean {
+        val lib = awaitLibrarian(20_000) ?: return false
+        val now = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000) ?: return false
+        if (now.result == 0 && now.body.contentEquals(previous)) return true
+        val w = call(lib, AmplifiProtocol.CMD_LIB_SET_PRESET_FILE, AmplifiProtocol.setPresetFileArgs(previous, index), 15_000)
+        Log.w(TAG, "put back slot $index after a failed write: result=${w?.result}")
+        return w != null && w.result == 0
+    }
+
+    /** A tone name the amp can hold: printable ASCII, trimmed, not too long. */
+    private fun cleanToneName(name: String) = name.filter { it.code in 32..126 }.trim().take(MAX_NAME_LENGTH)
+
+    /**
+     * Rename the tone stored in slot [index].
+     *
+     * The amp has no rename command: a tone's name is a string inside the tone, so this reads the
+     * stored tone, changes only that string and writes the whole thing back. The slot's old contents
+     * are kept first (for [undoLastSave]), the tone is refused if re-encoding it would change
+     * anything but the name, and the write is read back and checked.
+     */
+    fun renameStoredTone(index: Int, newName: String) {
+        sessionScope.launch {
+            val lib = librarian; val table = symbols
+            if (lib == null || table == null || !_ready.value) { _saveStatus.value = "Not connected"; return@launch }
+            if (index !in 0 until _slotCount.value) { _saveStatus.value = "No such slot"; return@launch }
+            val clean = cleanToneName(newName)
+            if (clean.isEmpty()) { _saveStatus.value = "A tone needs a name"; return@launch }
+            _saveStatus.value = "Renaming slot $index…"
+            awaitParamsSent()
+
+            val old = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000)
+            if (old == null) { _saveStatus.value = "The amp didn't answer, so nothing was changed"; return@launch }
+            if (old.result != 0 || old.body.isEmpty()) { _saveStatus.value = "Slot $index is empty"; return@launch }
+            val preset = runCatching { PresetCodec.decode(old.body, table.names) }.getOrNull()
+            if (preset == null || !preset.encode().contentEquals(old.body)) {
+                Log.w(TAG, "rename: slot $index does not re-encode exactly; refusing")
+                _saveStatus.value = "This tone can't be edited safely, so it was left alone"
+                return@launch
+            }
+            if (preset.name == clean) { _saveStatus.value = "Slot $index is already called \"$clean\""; return@launch }
+            backUp(index, old.body)
+            preset.name = clean
+            val body = preset.encode()
+
+            suppressPatchEventsUntil = now() + 3_000
+            val set = call(lib, AmplifiProtocol.CMD_LIB_SET_PRESET_FILE, AmplifiProtocol.setPresetFileArgs(body, index), 15_000)
+            if (set == null || set.result != 0) {
+                Log.w(TAG, "rename: SetPresetFile refused: reply=${set != null} result=${set?.result}")
+                val intact = putBackIfChanged(index, old.body)
+                _saveStatus.value = if (intact) "The amp did not accept the new name (result ${set?.result}). Slot $index is as it was."
+                                    else "The amp did not store the new name properly and slot $index could not be checked. Use Undo to put it back."
+                if (!intact) { undoBody = old.body; _undoSlot.value = index }
+                return@launch
+            }
+            val back = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000)
+            val verified = back != null && back.result == 0 && back.body.contentEquals(body)
+
+            undoBody = old.body
+            _undoSlot.value = index
+            _ampPresets.value = (_ampPresets.value.filter { it.first != index } + (index to clean)).sortedBy { it.first }
+            connectedMac()?.let { saveCachedNames(it, _ampPresets.value) }
+            if (_loadedFrom.value == index) {
+                _activeTone.value = clean
+                _livePreset.value?.name = clean
+                _presetRevision.value = _presetRevision.value + 1
+            }
+            Log.i(TAG, "rename: slot $index -> '$clean' verified=$verified")
+            _saveStatus.value = if (verified) "Slot $index is now called \"$clean\""
+                                else "Renamed slot $index, but reading it back didn't match. Check it on the amp."
         }
     }
 
@@ -1455,6 +1586,44 @@ class AmplifiBluetoothManager(private val context: Context) {
             badSlots.remove(index)
             val n = libCallForSlot(index, AmplifiProtocol.CMD_LIB_GET_PRESET_NAME, 3_000)
             Log.i(TAG, "restore: slot $index now reads '${n?.let { AmplifiProtocol.parsePresetName(it.body) }}'")
+        }
+    }
+
+    /** Debug aid: read two stored slots and say whether their bytes are identical (read-only). */
+    fun debugCompareSlots(a: Int, b: Int) {
+        sessionScope.launch {
+            val lib = librarian ?: return@launch
+            val x = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(a), 10_000)
+            val y = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(b), 10_000)
+            if (x == null || y == null) { Log.w(TAG, "cmp: read failed"); return@launch }
+            val same = x.body.contentEquals(y.body)
+            val first = (0 until minOf(x.body.size, y.body.size)).firstOrNull { x.body[it] != y.body[it] }
+            Log.i(TAG, "cmp: slot $a ${x.body.size} B, slot $b ${y.body.size} B, identical=$same, first difference at $first")
+        }
+    }
+
+    /** Debug aid: print how the live tone's blocks differ from stored slot [index]'s (read-only). */
+    fun debugLayout(index: Int) {
+        sessionScope.launch {
+            val lib = librarian ?: return@launch
+            val table = symbols ?: return@launch
+            val live = _livePreset.value ?: return@launch
+            val r = call(lib, AmplifiProtocol.CMD_LIB_GET_PRESET_FILE, AmplifiProtocol.u32(index), 10_000) ?: return@launch
+            val stored = runCatching { PresetCodec.decode(r.body, table.names) }.getOrNull() ?: return@launch
+            Log.i(TAG, "layout: live ${live.encode().size} B (complete=${live.isComplete}), slot $index ${r.body.size} B (complete=${stored.isComplete})")
+            val lb = live.blocks(); val sb = stored.blocks()
+            Log.i(TAG, "layout: live blocks ${lb.map { it.symbol }}")
+            Log.i(TAG, "layout: slot blocks ${sb.map { it.symbol }}")
+            for (b in lb) {
+                val o = sb.firstOrNull { it.symbol == b.symbol }
+                val ln = b.params.map { it.name }; val sn = o?.params?.map { it.name }.orEmpty()
+                val onlyLive = ln - sn.toSet(); val onlyStored = sn - ln.toSet()
+                val typeDiff = if (o == null) emptyList() else b.params.filter { p -> o.params.any { it.name == p.name && it.record.type != p.record.type } }.map { it.name }
+                Log.i(TAG, "layout: ${b.symbol} model live=${b.flow} stored=${o?.flow} params live=${ln.size} stored=${sn.size}" +
+                    " onlyLive=$onlyLive onlyStored=$onlyStored typeDiff=$typeDiff")
+            }
+            val nonDsp = live.records.size
+            Log.i(TAG, "layout: record counts live=$nonDsp stored=${stored.records.size}")
         }
     }
 

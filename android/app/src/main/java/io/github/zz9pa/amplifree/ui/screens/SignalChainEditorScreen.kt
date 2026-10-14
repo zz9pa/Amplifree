@@ -608,14 +608,12 @@ private fun EditorFooter(
             }
         }
         val actions: @Composable (Modifier) -> Unit = { mod ->
-            // Saving is switched off until the stored-tone format is handled correctly: writing the
-            // live tone's layout into a slot makes the amp go silent (see the hardware notes).
             Button(
                 onClick = onSave,
-                enabled = false,
+                enabled = isConnected,
                 modifier = mod.heightIn(min = MinTouchTarget).testTag("save_button"),
                 colors = ButtonDefaults.buttonColors(containerColor = AmpGold, contentColor = AmpMetallicDark)
-            ) { Text(stringResource(R.string.editor_save_coming_soon), fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+            ) { Text(stringResource(R.string.editor_save), fontWeight = FontWeight.Bold, fontSize = 13.sp) }
         }
         if (wide) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {

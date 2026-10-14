@@ -116,7 +116,7 @@
     <string name="editor_disconnected_body">Connect your amp and the tone that is playing on it appears here, ready to edit: every pedal, the amp and the cab.</string>
     <string name="editor_reading_title">Reading your tone…</string>
     <string name="editor_reading_body">Your amp\'s current tone is on its way. Every pedal, the amp and the cab will show up here.</string>
-    <string name="editor_save_coming_soon">SAVE (COMING SOON)</string>
+    <string name="editor_save">SAVE TO A SLOT</string>
     <string name="editor_undo">UNDO</string>
     <string name="editor_dismiss">OK</string>
     <string name="editor_browse_tones">BROWSE TONES</string>
@@ -125,6 +125,10 @@
     <string name="import_title">Apply this tone?</string>
     <string name="import_body">"%1$s" will replace the tone playing now. The tones stored on your amp are not changed, and RELOAD FROM AMP brings back the original.</string>
     <string name="import_body_dirty">"%1$s" will replace the tone playing now, and the changes you made to it are not saved on the amp, so they will be lost. The tones stored on your amp are not changed.</string>
+    <string name="tones_rename">Rename %1$s</string>
+    <string name="rename_title">Rename the tone in slot %1$d</string>
+    <string name="rename_body">The amp has no rename command, so this stores the tone again with the new name. You can undo it from the Editor tab afterwards.</string>
+    <string name="rename_confirm">Rename</string>
     <string name="discard_title">Discard your changes?</string>
     <string name="discard_body">"%1$s" has changes that are not saved on the amp. Carrying on will lose them.</string>
     <string name="discard_confirm">Discard</string>
@@ -145,6 +149,7 @@
     <string name="connection_no_amps">No paired amp found. Pair it in Android\'s Bluetooth settings first (it shows up as an audio device), then come back. After that Amplifree reconnects to it automatically.</string>
     <string name="connection_disconnect">DISCONNECT</string>
     <string name="connection_connect_to">Connect to %1$s</string>
+    <string name="connection_version">Firmware %1$s</string>
     <string name="connection_connected">Connected</string>
     <string name="picker_title">CHOOSE %1$s</string>
     <string name="picker_hint">Loads the model with its own default settings. Your other blocks are untouched.</string>

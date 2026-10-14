@@ -55,6 +55,7 @@ fun ConnectionDialog(
     val ready by hardwareManager.ready.collectAsState()
     val devices = hardwareManager.availableDevices
     val needsLink by hardwareManager.needsLink.collectAsState()
+    val version by hardwareManager.firmwareVersion.collectAsState()
     val context = LocalContext.current
     val status = friendlyStatus(rawStatus, context.resources)
     val connected = hardwareState.connectionState == ConnectionState.CONNECTED
@@ -161,9 +162,15 @@ fun ConnectionDialog(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(device.name, style = MaterialTheme.typography.titleSmall,
-                                        color = AmpTextPrimary, fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.weight(1f))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(device.name, style = MaterialTheme.typography.titleSmall,
+                                            color = AmpTextPrimary, fontWeight = FontWeight.Bold)
+                                        if (isThis && version != null) {
+                                            Text(stringResource(R.string.connection_version, version.orEmpty()),
+                                                style = MaterialTheme.typography.bodySmall, color = AmpTextSecondary,
+                                                modifier = Modifier.testTag("amp_version"))
+                                        }
+                                    }
                                     if (isThis) {
                                         Icon(Icons.Default.Check,
                                             contentDescription = stringResource(R.string.connection_connected),

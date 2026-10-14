@@ -29,15 +29,17 @@ use-at-your-own-risk.
   knob, switch and choice, the signal-path switches and FX mix levels, and the master volume
 - knob moves on the amp itself show up in the app
 - the amp's own tuner (no microphone)
+- save the live tone to a slot on the amp (the slot is backed up first, the write is read back and checked, and the
+  last save can be undone), and rename a stored tone
 - share tones: export the live tone to a small JSON file and import one someone else made
   (see [docs/TONE_FORMAT.md](docs/TONE_FORMAT.md)); importing changes only the live tone, never the
   amp's stored tones, and asks first if you have unsaved changes
+- import Spider V tone files (`.svl6p`), whose models and settings largely match the AMPLIFi's
 
 **Not there yet**
 
-- saving a tone to a slot on the amp is switched off until it can be done safely, so edits last until
-  you load another tone (the amp's own controls can still store one)
-- renaming tones (the amp can only rename a tone by saving it)
+- tone files for the AMPLIFi itself from Line 6's CustomTone site (`.l6t`) and for POD HD, POD Go and Helix cannot
+  be imported: they carry numeric ids or models this amp does not have
 - other AMPLIFi models and other phones are untested
 
 Not goals: no cloud features, and nothing that talks to Line 6's servers.

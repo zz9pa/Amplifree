@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
@@ -35,6 +36,7 @@ import io.github.zz9pa.amplifree.R
 import io.github.zz9pa.amplifree.ui.FriendlyStatus
 import io.github.zz9pa.amplifree.ui.LinkStatus
 import io.github.zz9pa.amplifree.ui.components.*
+import io.github.zz9pa.amplifree.ui.dialogs.RenameToneDialog
 import io.github.zz9pa.amplifree.ui.theme.*
 
 /**
@@ -51,9 +53,11 @@ fun ToneBrowserScreen(
     onRescan: () -> Unit,
     onLoad: (index: Int, name: String) -> Unit,
     onConnect: () -> Unit,
+    onRename: (index: Int, name: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val isReady = link.isReady
+    var renaming by rememberSaveable { mutableStateOf<Int?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -62,6 +66,16 @@ fun ToneBrowserScreen(
         else ampPresets.filter { it.second.contains(query, ignoreCase = true) }
     }
     val resources = LocalContext.current.resources
+
+    renaming?.let { slot ->
+        val current = ampPresets.firstOrNull { it.first == slot }?.second.orEmpty()
+        RenameToneDialog(
+            slot = slot,
+            currentName = current,
+            onRename = { n -> renaming = null; onRename(slot, n) },
+            onDismiss = { renaming = null }
+        )
+    }
 
     Column(
         modifier = modifier
@@ -227,6 +241,13 @@ fun ToneBrowserScreen(
                         }
                         if (isActive) {
                             Icon(Icons.Default.Check, contentDescription = stringResource(R.string.tones_active), tint = AmpGold)
+                        }
+                        IconButton(
+                            onClick = { renaming = index },
+                            enabled = isReady,
+                            modifier = Modifier.testTag("rename_$index")
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.tones_rename, name), tint = AmpTextSecondary)
                         }
                     }
                 }

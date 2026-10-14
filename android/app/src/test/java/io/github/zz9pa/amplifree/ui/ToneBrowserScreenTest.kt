@@ -30,9 +30,10 @@ class ToneBrowserScreenTest {
         status: FriendlyStatus = none,
         onConnect: () -> Unit = {},
         onRescan: () -> Unit = {},
-        onLoad: (Int, String) -> Unit = { _, _ -> }
+        onLoad: (Int, String) -> Unit = { _, _ -> },
+        onRename: (Int, String) -> Unit = { _, _ -> }
     ) = AmplifreeTheme {
-        ToneBrowserScreen(presets, "Crunch Rhythm", link, scan, status, onRescan, onLoad, onConnect)
+        ToneBrowserScreen(presets, "Crunch Rhythm", link, scan, status, onRescan, onLoad, onConnect, onRename)
     }
 
     @Test fun disconnectedWithNoTonesOffersConnect() {
@@ -111,5 +112,12 @@ class ToneBrowserScreenTest {
         rule.setContent { Screen() }
         rule.onNodeWithText("Lead Boost").assertHeightIsAtLeast(48.dp)
         rule.onNodeWithTag("tone_refresh").assertHeightIsAtLeast(48.dp)
+    }
+
+    // ---- renaming ---------------------------------------------------------------
+
+    @Test fun renameIsUnavailableWhileTheAmpIsAway() {
+        rule.setContent { Screen(link = LinkStatus.DISCONNECTED) }
+        rule.onNodeWithTag("rename_1").assertIsNotEnabled()
     }
 }

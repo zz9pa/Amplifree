@@ -57,6 +57,10 @@ class DebugCommandReceiver : BroadcastReceiver() {
             "save" -> mgr.saveLiveToSlot(arg, s)
             "writeback" -> mgr.debugWriteBack(arg)
             "tunerprobe" -> mgr.probeTuner(if (arg > 0) arg else 10)
+            "layout" -> mgr.debugLayout(arg)
+            "cmp" -> mgr.debugCompareSlots(arg, s.toIntOrNull() ?: 0)
+            "rename" -> mgr.renameStoredTone(arg, s)
+            "undo" -> mgr.undoLastSave()
             "tonexport" -> {
                 val json = mgr.exportLiveTone()?.toJson()
                 if (json == null) Log.w(TAG, "DBG: no live tone yet")
@@ -64,7 +68,7 @@ class DebugCommandReceiver : BroadcastReceiver() {
             }
             "toneimport" -> {
                 val f = File(context.filesDir, s.ifEmpty { "debug_tone_in.json" })
-                when (val r = if (f.exists()) ToneFile.parse(f.readText()) else null) {
+                when (val r = if (f.exists()) parseToneText(f.readText()) else null) {
                     is ToneFile.Parsed.Ok -> mgr.importTone(r.tone)
                     is ToneFile.Parsed.Refused -> Log.w(TAG, "DBG: refused: ${r.reason}")
                     null -> Log.w(TAG, "DBG: no such file ${f.name}")

@@ -115,6 +115,15 @@ object AmplifiProtocol {
         return buf
     }
 
+    /**
+     * Pad an RSMC payload with zeros to a multiple of four bytes. The amp pads the frames it sends to
+     * four bytes, and a data segment whose frame (the payload plus 16 bytes of headers) is an odd
+     * size is dropped by it unless it is padded the same way: the last segment of a long write
+     * (a stored tone) went missing until this was done.
+     */
+    fun padTo4(payload: ByteArray): ByteArray =
+        if (payload.size % 4 == 0) payload else payload.copyOf((payload.size + 3) and 3.inv())
+
     // ---- BSP transport header ---------------------------------------------
 
     /** word0 = type<<28 | flags<<26 | dst ; word1 = aux<<16 | src */
@@ -210,6 +219,17 @@ object AmplifiProtocol {
             }
         }
         return ""
+    }
+
+    /**
+     * The version word an AMPLIFi reports when a service opens, as a version string.
+     * The word's bytes are digit pairs, most significant first: `0x02600000` is firmware 2.60.0 (the last
+     * byte is a build number, shown only when it is not zero). Checked against an AMPLIFi 150 reporting 2.60.0.
+     */
+    fun formatVersion(word: Int): String {
+        fun part(shift: Int) = ((word ushr shift) and 0xff).toString(16)
+        val base = "${part(24)}.${part(16)}.${part(8)}"
+        return if (word and 0xff != 0) "$base.${part(0)}" else base
     }
 
     /** The symbol that holds the routing/enable switches rather than a single module. */

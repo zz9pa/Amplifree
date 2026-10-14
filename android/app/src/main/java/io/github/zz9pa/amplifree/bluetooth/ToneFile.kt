@@ -150,7 +150,8 @@ object ToneImport {
 
     class Plan(val swaps: List<Swap>)
 
-    class ParamPlan(val sets: List<Setting>, val skipped: Int)
+    /** [unmatched] names the blocks left alone because the model they were written for is not the one loaded. */
+    class ParamPlan(val sets: List<Setting>, val skipped: Int, val unmatched: List<String> = emptyList())
 
     /** Blocks whose model differs from what is live, for models the amp knows. The routing block is never swapped. */
     fun planSwaps(
@@ -180,13 +181,21 @@ object ToneImport {
         file: ToneFile,
         live: List<PresetCodec.Block>,
         info: Map<String, ParamInfo>,
-        idOf: (String) -> Int?
+        idOf: (String) -> Int?,
+        routing: String = AmplifiProtocol.ROUTING_BLOCK
     ): ParamPlan {
         val sets = ArrayList<Setting>()
+        val unmatched = ArrayList<String>()
         var skipped = 0
         for (fb in file.blocks) {
             val lb = live.firstOrNull { it.symbol == fb.slot }
             if (lb == null) { skipped += fb.params.size; continue }
+            // Settings written for one model must not be applied to another that happens to share names.
+            if (fb.model != null && fb.slot != routing && lb.flow != fb.model) {
+                skipped += fb.params.size
+                unmatched += "${fb.slot}: ${fb.model}"
+                continue
+            }
             for ((key, v) in fb.params) {
                 val p = lb.params.firstOrNull { AmplifiProtocol.editorParamName(lb.symbol, it.name) == key }
                 if (p == null) { skipped++; continue }
@@ -214,6 +223,6 @@ object ToneImport {
                 if (planned == null) skipped++ else sets.add(planned)
             }
         }
-        return ParamPlan(sets, skipped)
+        return ParamPlan(sets, skipped, unmatched)
     }
 }

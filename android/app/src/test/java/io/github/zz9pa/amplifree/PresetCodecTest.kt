@@ -163,4 +163,20 @@ class PresetCodecTest {
         val p = PresetCodec.Preset(mutableListOf(sec, short), ByteArray(0), listOf("A"))
         assertEquals(1, p.blocks().size)       // does not throw
     }
+
+    @Test
+    fun theVersionWordReadsAsDigitPairs() {
+        assertEquals("2.60.0", AmplifiProtocol.formatVersion(0x02600000))
+        assertEquals("2.5.1", AmplifiProtocol.formatVersion(0x02050100))
+        assertEquals("2.60.0.12", AmplifiProtocol.formatVersion(0x02600012))
+    }
+
+    @Test
+    fun anOutgoingPayloadIsPaddedToAMultipleOfFourBytes() {
+        assertEquals(0, AmplifiProtocol.padTo4(ByteArray(0)).size)
+        assertEquals(228, AmplifiProtocol.padTo4(ByteArray(228)).size)
+        assertEquals(92, AmplifiProtocol.padTo4(ByteArray(90)).size)            // a 74-byte segment: 74 + 16
+        val padded = AmplifiProtocol.padTo4(byteArrayOf(1, 2, 3))
+        assertEquals(listOf<Byte>(1, 2, 3, 0), padded.toList())
+    }
 }

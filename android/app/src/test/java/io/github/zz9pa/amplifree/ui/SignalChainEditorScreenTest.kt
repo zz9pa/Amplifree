@@ -202,13 +202,25 @@ class SignalChainEditorScreenTest {
         assertEquals(during, sliderText("param_Bass"))
     }
 
-    // ---- save stays off ---------------------------------------------------
+    // ---- save ------------------------------------------------------------
 
-    @Test fun saveButtonIsStillDisabled() {
-        rule.setContent { Editor(dirty = true) }
+    @Test fun saveOpensTheSaveDialogWhileConnected() {
+        var saves = 0
+        rule.setContent { AmplifreeTheme { SignalChainEditorScreen(
+            preset = preset(), revision = 0, link = LinkStatus.READY, status = none,
+            onSetFloat = { _, _, _ -> }, onSetBool = { _, _, _ -> }, onOpenPresets = {}, onReload = {},
+            dirty = true, onSave = { saves++ }, initiallyCollapsed = false
+        ) } }
+        rule.onNodeWithTag("signal_chain_editor").performScrollToNode(hasTestTag("save_button"))
+        rule.onNodeWithTag("save_button").assertIsEnabled().performClick()
+        assertEquals(1, saves)
+        rule.onNodeWithText("SAVE TO A SLOT").assertExists()
+    }
+
+    @Test fun saveIsUnavailableWhileTheAmpIsAway() {
+        rule.setContent { Editor(dirty = true, link = LinkStatus.DISCONNECTED) }
         rule.onNodeWithTag("signal_chain_editor").performScrollToNode(hasTestTag("save_button"))
         rule.onNodeWithTag("save_button").assertIsNotEnabled()
-        rule.onNodeWithText("SAVE (COMING SOON)").assertExists()
     }
 
     // ---- folded cards --------------------------------------------
