@@ -14,10 +14,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.zz9pa.amplifree.R
 import io.github.zz9pa.amplifree.data.ConnectionState
 import io.github.zz9pa.amplifree.data.HardwareState
 import io.github.zz9pa.amplifree.ui.theme.*
@@ -32,6 +38,13 @@ fun TopHardwareHeader(
     modifier: Modifier = Modifier
 ) {
     val connected = hardwareState.connectionState == ConnectionState.CONNECTED
+    val chipText = when {
+        connected && ready -> hardwareState.connectedDevice?.name ?: stringResource(R.string.header_connected_fallback)
+        connected -> stringResource(R.string.header_connecting)
+        else -> stringResource(R.string.header_tap_to_connect)
+    }
+    val chipDescription = stringResource(R.string.header_connection_description, chipText)
+    val chipAction = stringResource(R.string.header_connection_action)
     Surface(
         color = AmpSurface,
         modifier = modifier
@@ -45,54 +58,59 @@ fun TopHardwareHeader(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
+                    .weight(1f, fill = false)
+                    .clip(RoundedCornerShape(24.dp))
                     .background(AmpMetallicDark)
-                    .clickable { onOpenConnectionDialog() }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .clickable(onClickLabel = chipAction, role = Role.Button) { onOpenConnectionDialog() }
+                    .heightIn(min = MinTouchTarget)
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    // One spoken element instead of an icon and a loose piece of text.
+                    .semantics(mergeDescendants = true) { contentDescription = chipDescription }
                     .testTag("connection_chip")
             ) {
                 Icon(
                     imageVector = if (connected) Icons.Default.BluetoothConnected else Icons.Default.Bluetooth,
-                    contentDescription = "Amp connection",
+                    contentDescription = null,
                     tint = when {
                         connected && ready -> AmpCyanLight
                         connected -> AmpOrangeGlow
                         else -> AmpTextSecondary
                     },
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = when {
-                        connected && ready -> hardwareState.connectedDevice?.name ?: "Connected"
-                        connected -> "Connecting…"
-                        else -> "Tap to connect"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
+                    text = chipText,
+                    style = MaterialTheme.typography.labelMedium,
                     color = AmpTextPrimary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
             if (!toneName.isNullOrBlank()) {
+                val toneDescription = stringResource(R.string.header_tone_description, toneName)
                 Text(
                     text = toneName,
                     style = MaterialTheme.typography.titleMedium,
                     color = AmpGold,
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 14.sp,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(start = 12.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.End
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .padding(start = 12.dp)
+                        .semantics { contentDescription = toneDescription },
+                    textAlign = TextAlign.End
                 )
             }
         }

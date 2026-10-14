@@ -1,3 +1,148 @@
 <resources>
     <string name="app_name">Amplifree</string>
+
+    <!-- Connection / link state -->
+    <string name="action_connect">Connect to amp</string>
+    <string name="action_connect_short">Connect</string>
+    <string name="action_open_bluetooth_settings">Open Bluetooth settings</string>
+    <string name="link_disconnected_title">Amp not connected</string>
+    <string name="link_needs_link_title">Waiting for Bluetooth</string>
+    <string name="link_connecting_title">Connecting to your amp…</string>
+
+    <!-- Friendly versions of the connection status messages -->
+    <string name="status_not_connected">Not connected to your amp.</string>
+    <string name="status_connected">Connected and ready.</string>
+    <string name="status_getting_ready">Getting your amp ready…</string>
+    <string name="status_reconnecting">Lost the connection to your amp. Reconnecting…</string>
+    <string name="status_learning_models">Learning your amp\'s models (%1$d of %2$d)…</string>
+
+    <!-- Navigation -->
+    <string name="tab_editor">Editor</string>
+    <string name="tab_tones">Tones</string>
+    <string name="tab_tuner">Tuner</string>
+
+    <!-- Top header -->
+    <string name="header_connected_fallback">Connected</string>
+    <string name="header_connecting">Connecting…</string>
+    <string name="header_tap_to_connect">Tap to connect</string>
+    <string name="header_connection_description">Amp connection: %1$s</string>
+    <string name="header_connection_action">Manage amp connection</string>
+    <string name="header_tone_description">Current tone: %1$s</string>
+
+    <!-- Tones tab -->
+    <string name="tones_search_hint">Search tones</string>
+    <string name="tones_search_clear">Clear search</string>
+    <string name="tones_refresh">Refresh</string>
+    <string name="tones_refresh_description">Refresh the tone list from the amp</string>
+    <plurals name="tones_count">
+        <item quantity="one">%1$d tone on the amp</item>
+        <item quantity="other">%1$d tones on the amp</item>
+    </plurals>
+    <string name="tones_filtered_count">%1$d of %2$d tones</string>
+    <string name="tones_scanning">Reading tones from your amp… %1$d of %2$d</string>
+    <string name="tones_waiting_title">Waiting for your amp\'s tone list…</string>
+    <string name="tones_waiting_body">The tones appear here as soon as the amp has sent them.</string>
+    <string name="tones_empty_title">No tones to show yet</string>
+    <string name="tones_empty_body">Your amp hasn\'t sent its list of stored tones. Refresh to ask for it again.</string>
+    <string name="tones_no_match_title">No matching tones</string>
+    <string name="tones_no_match_body">Nothing matches \"%1$s\".</string>
+    <string name="tones_disconnected_body">Connect your amp to browse the tones stored on it.</string>
+    <string name="tones_banner_disconnected">Not connected. Connect to load a tone.</string>
+    <string name="tones_slot">Slot %1$d</string>
+    <string name="tones_active">Active</string>
+    <string name="tones_load_action">Load this tone</string>
+
+    <!-- Tuner tab -->
+    <string name="tuner_title">CHROMATIC GUITAR TUNER</string>
+    <string name="tuner_subtitle">Reading from your amp</string>
+    <string name="tuner_disconnected_body">Connect your amp to use its built-in tuner. The tuner listens through the amp, never through the phone\'s microphone.</string>
+    <string name="tuner_play_note">Play a note</string>
+    <string name="tuner_no_signal">NO SIGNAL</string>
+    <string name="tuner_in_tune">IN TUNE ✓</string>
+    <string name="tuner_cents">%1$+.0f CENTS</string>
+    <string name="tuner_hz">%1$.1f Hz</string>
+    <string name="tuner_gauge_none">Tuner: no signal. Play a note.</string>
+    <string name="tuner_gauge_reading">Tuner: note %1$s, %2$.1f hertz, %3$s</string>
+    <string name="tuner_gauge_in_tune">in tune</string>
+    <string name="tuner_gauge_cents">%1$+.0f cents</string>
+    <string name="tuner_tap_string">TAP A STRING TO LOCK ON TO IT</string>
+    <string name="tuner_string_hz">%1$.0fHz</string>
+    <string name="tuner_string_description">String %1$s, %2$.0f hertz</string>
+    <string name="tuner_string_lock">Lock the tuner to this string</string>
+    <string name="tuner_string_unlock">Go back to automatic string detection</string>
+
+    <!-- Editor tab: blocks of the signal chain -->
+    <string name="block_routing">Routing</string>
+    <string name="block_gate">Noise Gate</string>
+    <string name="block_volume_pedal">Volume Pedal</string>
+    <string name="block_wah">Wah</string>
+    <string name="block_fx1">FX 1</string>
+    <string name="block_fx2">FX 2</string>
+    <string name="block_fx3">FX 3</string>
+    <string name="block_fx4">FX 4</string>
+    <string name="block_amp">Amplifier</string>
+    <string name="block_air">Air</string>
+    <string name="block_studio_cab">Studio Cab</string>
+    <string name="block_live_cab">Live Cab</string>
+    <string name="block_post_comp">Compressor</string>
+    <string name="block_post_eq">EQ</string>
+
+    <!-- Editor tab: cards and shortcut chips -->
+    <string name="section_master">MASTER VOLUME</string>
+    <string name="section_path">SIGNAL PATH</string>
+    <string name="section_mix">MIX &amp; ROUTING</string>
+    <string name="param_master">Master</string>
+    <string name="chip_amp">Amp</string>
+    <string name="chip_cab">Cab</string>
+    <string name="chip_studio_cab">Studio Cab</string>
+    <string name="chip_live_cab">Live Cab</string>
+    <string name="chip_fx">FX %1$d</string>
+    <string name="chip_mix">Mix</string>
+    <string name="editor_jump_to">Jump to %1$s</string>
+    <string name="editor_jump_row">Jump to a section</string>
+    <string name="card_collapse">Collapse %1$s</string>
+    <string name="card_expand">Expand %1$s</string>
+    <string name="card_change_model">Change model</string>
+    <string name="card_model_description">%1$s model: %2$s</string>
+    <string name="card_no_params">No adjustable parameters</string>
+
+    <!-- Editor tab: header, states and footer -->
+    <string name="editor_live_tone">Live Tone</string>
+    <string name="editor_modified">● MODIFIED</string>
+    <string name="editor_modified_description">Tone modified</string>
+    <string name="editor_banner_disconnected">Not connected — changes won\'t reach the amp</string>
+    <string name="editor_disconnected_body">Connect your amp and the tone that is playing on it appears here, ready to edit: every pedal, the amp and the cab.</string>
+    <string name="editor_reading_title">Reading your tone…</string>
+    <string name="editor_reading_body">Your amp\'s current tone is on its way. Every pedal, the amp and the cab will show up here.</string>
+    <string name="editor_save_coming_soon">SAVE (COMING SOON)</string>
+    <string name="editor_undo">UNDO</string>
+    <string name="editor_dismiss">OK</string>
+    <string name="editor_browse_tones">BROWSE TONES</string>
+    <string name="editor_reload">RELOAD FROM AMP</string>
+    <string name="choice_open_action">Choose a value</string>
+
+    <!-- Dialogs -->
+    <string name="dialog_close">CLOSE</string>
+    <string name="dialog_cancel">CANCEL</string>
+    <string name="connection_title">AMP CONNECTION</string>
+    <string name="connection_needs_link">Android has the amp paired but not connected. Tap it in Bluetooth settings; when it shows Connected, come back and Amplifree finishes connecting by itself.</string>
+    <string name="connection_open_bt_settings">OPEN BLUETOOTH SETTINGS</string>
+    <string name="connection_paired_amps">PAIRED AMPS</string>
+    <string name="connection_no_amps">No paired amp found. Pair it in Android\'s Bluetooth settings first (it shows up as an audio device), then come back. After that Amplifree reconnects to it automatically.</string>
+    <string name="connection_disconnect">DISCONNECT</string>
+    <string name="connection_connect_to">Connect to %1$s</string>
+    <string name="connection_connected">Connected</string>
+    <string name="picker_title">CHOOSE %1$s</string>
+    <string name="picker_hint">Loads the model with its own default settings. Your other blocks are untouched.</string>
+    <string name="picker_search">Search</string>
+    <string name="picker_no_match">Nothing matches \"%1$s\"</string>
+    <string name="picker_current">Current</string>
+    <string name="picker_choose_action">Use this model</string>
+    <string name="save_title">SAVE TONE TO AMP</string>
+    <string name="save_name_label">Tone name</string>
+    <string name="save_slot_heading">SLOT</string>
+    <string name="save_slot_empty">(empty)</string>
+    <string name="save_slot_description">Slot %1$d, %2$s</string>
+    <string name="save_replaces">This replaces \"%1$s\" in slot %2$d. You can undo it straight after.</string>
+    <string name="save_confirm">SAVE</string>
 </resources>

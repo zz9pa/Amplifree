@@ -7,8 +7,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
@@ -20,13 +22,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import io.github.zz9pa.amplifree.R
 import io.github.zz9pa.amplifree.data.ConnectionState
 import io.github.zz9pa.amplifree.data.HardwareManager
 import io.github.zz9pa.amplifree.data.HardwareState
+import io.github.zz9pa.amplifree.ui.friendlyStatus
+import io.github.zz9pa.amplifree.ui.components.AmpButton
+import io.github.zz9pa.amplifree.ui.components.AmpOutlinedButton
+import io.github.zz9pa.amplifree.ui.components.MinTouchTarget
 import io.github.zz9pa.amplifree.ui.theme.*
 
 /**
@@ -39,11 +51,12 @@ fun ConnectionDialog(
     hardwareManager: HardwareManager,
     onDismiss: () -> Unit
 ) {
-    val status by hardwareManager.status.collectAsState()
+    val rawStatus by hardwareManager.status.collectAsState()
     val ready by hardwareManager.ready.collectAsState()
     val devices = hardwareManager.availableDevices
     val needsLink by hardwareManager.needsLink.collectAsState()
     val context = LocalContext.current
+    val status = friendlyStatus(rawStatus, context.resources)
     val connected = hardwareState.connectionState == ConnectionState.CONNECTED
 
     Dialog(onDismissRequest = onDismiss) {
@@ -53,12 +66,18 @@ fun ConnectionDialog(
             border = androidx.compose.foundation.BorderStroke(1.dp, AmpGold),
             modifier = Modifier.fillMaxWidth().padding(16.dp).testTag("connection_dialog")
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("AMP CONNECTION", style = MaterialTheme.typography.titleMedium,
-                    color = AmpGold, fontWeight = FontWeight.Bold)
+            // Scrolls as a whole so nothing is cut off with a large font or in landscape.
+            Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
+                Text(stringResource(R.string.connection_title), style = MaterialTheme.typography.titleMedium,
+                    color = AmpGold, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.semantics { heading() })
                 Spacer(Modifier.height(12.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                ) {
+                    // The colour is only a hint; the status text next to it carries the meaning.
                     Box(
                         Modifier.size(10.dp).clip(CircleShape).background(
                             when {
@@ -69,48 +88,50 @@ fun ConnectionDialog(
                         )
                     )
                     Spacer(Modifier.width(8.dp))
+                    if (status.isBusy) {
+                        CircularProgressIndicator(
+                            color = AmpGold, trackColor = AmpSurfaceVariant, strokeWidth = 2.dp,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
                     Text(
-                        text = status,
+                        text = status.text,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = AmpTextPrimary
+                        color = if (status.isError) AmpRedLED else AmpTextPrimary
                     )
                 }
 
                 if (needsLink) {
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "Android has the amp paired but not connected. Tap it in Bluetooth " +
-                        "settings; when it shows Connected, come back and Amplifree finishes " +
-                        "connecting by itself.",
+                        stringResource(R.string.connection_needs_link),
                         style = MaterialTheme.typography.bodySmall,
-                        color = AmpTextSecondary,
-                        fontSize = 12.sp
+                        color = AmpTextSecondary
                     )
                     Spacer(Modifier.height(8.dp))
-                    Button(
+                    AmpButton(
+                        text = stringResource(R.string.connection_open_bt_settings),
                         onClick = {
                             context.startActivity(
                                 Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             )
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = AmpGold, contentColor = AmpMetallicDark),
                         modifier = Modifier.testTag("open_bt_settings")
-                    ) { Text("OPEN BLUETOOTH SETTINGS", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
                 }
 
                 Spacer(Modifier.height(16.dp))
-                Text("PAIRED AMPS", style = MaterialTheme.typography.labelSmall,
-                    color = AmpGold, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.connection_paired_amps), style = MaterialTheme.typography.labelMedium,
+                    color = AmpGold, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.semantics { heading() })
                 Spacer(Modifier.height(8.dp))
 
                 if (devices.isEmpty()) {
                     Text(
-                        "No paired amp found. Pair it in Android's Bluetooth settings first " +
-                        "(it shows up as an audio device), then come back. After that Amplifree " +
-                        "reconnects to it automatically.",
+                        stringResource(R.string.connection_no_amps),
                         style = MaterialTheme.typography.bodySmall,
-                        color = AmpTextSecondary,
-                        fontSize = 12.sp
+                        color = AmpTextSecondary
                     )
                 } else {
                     LazyColumn(
@@ -119,6 +140,7 @@ fun ConnectionDialog(
                     ) {
                         items(devices) { device ->
                             val isThis = connected && hardwareState.connectedDevice?.macAddress == device.macAddress
+                            val connectAction = stringResource(R.string.connection_connect_to, device.name)
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
                                 color = if (isThis) AmpSurfaceVariant else AmpMetallicDark,
@@ -126,16 +148,27 @@ fun ConnectionDialog(
                                     1.dp, if (isThis) AmpGold else AmpSurfaceVariant
                                 ),
                                 modifier = Modifier.fillMaxWidth()
-                                    .clickable { hardwareManager.connectDevice(device) }
+                                    .clickable(onClickLabel = connectAction, role = Role.Button) {
+                                        hardwareManager.connectDevice(device)
+                                    }
+                                    .semantics(mergeDescendants = true) {}
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                                    modifier = Modifier
+                                        .heightIn(min = 56.dp)
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                        .fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(device.name, style = MaterialTheme.typography.titleSmall,
-                                        color = AmpTextPrimary, fontWeight = FontWeight.Bold)
-                                    if (isThis) Icon(Icons.Default.Check, contentDescription = "Connected", tint = AmpGold)
+                                        color = AmpTextPrimary, fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.weight(1f))
+                                    if (isThis) {
+                                        Icon(Icons.Default.Check,
+                                            contentDescription = stringResource(R.string.connection_connected),
+                                            tint = AmpGold)
+                                    }
                                 }
                             }
                         }
@@ -145,17 +178,19 @@ fun ConnectionDialog(
                 Spacer(Modifier.height(16.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    OutlinedButton(
+                    AmpOutlinedButton(
+                        text = stringResource(R.string.connection_disconnect),
                         onClick = { hardwareManager.disconnect() },
                         enabled = hardwareState.connectionState != ConnectionState.DISCONNECTED,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, AmpGold)
-                    ) { Text("DISCONNECT", color = AmpGold, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
-                    Button(
+                        modifier = Modifier.weight(1f)
+                    )
+                    AmpButton(
+                        text = stringResource(R.string.dialog_close),
                         onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(containerColor = AmpGold, contentColor = AmpMetallicDark)
-                    ) { Text("CLOSE", fontWeight = FontWeight.Bold) }
+                        modifier = Modifier.weight(1f).heightIn(min = MinTouchTarget)
+                    )
                 }
             }
         }
